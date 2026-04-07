@@ -13,6 +13,7 @@ import subprocess
 import time
 import boto3
 from botocore.exceptions import NoCredentialsError
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +21,99 @@ logger = logging.getLogger(__name__)
 
 server_address = os.getenv('SERVER_ADDRESS', '127.0.0.1')
 client_id = str(uuid.uuid4())
+
+
+def mask_job_input_for_log(job_input):
+    masked = dict(job_input)
+
+    if 'prompt' in masked:
+        masked['prompt'] = '[REDACTED]'
+    if 'negative_prompt' in masked:
+        masked['negative_prompt'] = '[REDACTED]'
+    if 'negativePrompt' in masked:
+        masked['negativePrompt'] = '[REDACTED]'
+
+    if '_secure' in masked:
+        masked['_secure'] = {
+            'v': masked.get('_secure', {}).get('v'),
+            'alg': masked.get('_secure', {}).get('alg'),
+            'kid': masked.get('_secure', {}).get('kid'),
+            'ts': masked.get('_secure', {}).get('ts'),
+            'nonce': '[REDACTED]',
+            'ciphertext': '[REDACTED]'
+        }
+
+    if 'lora' in masked:
+        masked['lora'] = '[REDACTED]'
+
+    return masked
+
+
+def decode_encryption_key():
+    key_b64 = os.getenv('ZIMAGE_FIELD_ENC_KEY_B64') or os.getenv('FIELD_ENC_KEY_B64')
+    if not key_b64:
+        return None
+
+    try:
+        key = base64.b64decode(key_b64)
+    except Exception as error:
+        raise Exception(f"Invalid encryption key encoding: {error}")
+
+    if len(key) != 32:
+        raise Exception(f"Invalid encryption key length: expected 32 bytes, got {len(key)}")
+
+    return key
+
+
+def decrypt_secure_input(job_input):
+    secure = job_input.get('_secure')
+    if not secure:
+        return job_input
+
+    key = decode_encryption_key()
+    if not key:
+        raise Exception("Secure payload received but FIELD_ENC_KEY_B64 is missing")
+
+    try:
+        nonce = base64.b64decode(secure['nonce'])
+        ciphertext = base64.b64decode(secure['ciphertext'])
+        aad = b'engui:zimage:v1'
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+        payload = json.loads(plaintext.decode('utf-8'))
+    except Exception as error:
+        raise Exception(f"Failed to decrypt secure payload: {error}")
+
+    if 'prompt' in payload:
+        job_input['prompt'] = payload.get('prompt', '')
+
+    if 'negative_prompt' in payload:
+        job_input['negative_prompt'] = payload.get('negative_prompt', '')
+        job_input['negativePrompt'] = payload.get('negative_prompt', '')
+
+    if 'lora_names' in payload:
+        names = payload.get('lora_names') or []
+        weights = job_input.get('lora_weights') or []
+        lora = []
+
+        for index, name in enumerate(names):
+            weight = 1.0
+            if isinstance(weights, list) and index < len(weights):
+                try:
+                    weight = float(weights[index])
+                except Exception:
+                    weight = 1.0
+
+            if name:
+                lora.append([name, weight])
+
+        if lora:
+            job_input['lora'] = lora
+
+    # Prevent accidental leakage in downstream logs/processing
+    job_input.pop('_secure', None)
+
+    return job_input
+
 
 def to_nearest_multiple_of_16(value):
     """주어진 값을 가장 가까운 16의 배수로 보정, 최소 16 보장"""
@@ -221,8 +315,9 @@ def load_workflow(workflow_path):
 
 def handler(job):
     job_input = job.get("input", {})
+    job_input = decrypt_secure_input(job_input)
 
-    logger.info(f"Received job input: {job_input}")
+    logger.info(f"Received job input: {mask_job_input_for_log(job_input)}")
     task_id = f"task_{uuid.uuid4()}"
 
     # condition 이미지 입력 처리 (condition_image, condition_image_path, condition_image_url, condition_image_base64 중 하나만 사용)
@@ -271,7 +366,7 @@ def handler(job):
     cfg = job_input.get("cfg", 1.0)
     width = job_input.get("width", 1024)
     height = job_input.get("height", 1024)
-    negative_prompt = job_input.get("negative_prompt", "")
+    negative_prompt = job_input.get("negative_prompt", job_input.get("negativePrompt", ""))
     
     # 해상도(폭/높이) 16배수 보정
     adjusted_width = to_nearest_multiple_of_16(width)
