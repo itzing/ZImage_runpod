@@ -3,9 +3,9 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Start ComfyUI in the background
-echo "Starting ComfyUI in the background..."
-python /ComfyUI/main.py --listen --use-sage-attention &
+# Start ComfyUI in the background (RAM mode)
+echo "Starting ComfyUI in RAM mode..."
+COMFY_ROOT=/ComfyUI PYTHON_BIN=/usr/bin/python3 COMFY_SILENT=${COMFY_SILENT:-1} /scripts/start_comfy_ram.sh 8188 &
 
 # Wait for ComfyUI to be ready
 echo "Waiting for ComfyUI to be ready..."

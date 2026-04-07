@@ -303,7 +303,7 @@ def get_images(ws, prompt):
                 images_output.append(image_data)
         output_images[node_id] = images_output
 
-    return output_images
+    return output_images, prompt_id
 
 def load_workflow(workflow_path):
     """워크플로우 파일을 로드하는 함수"""
@@ -353,6 +353,7 @@ def handler(job):
 
     logger.info(f"Received job input (masked): {mask_job_input_for_log(job_input)}")
     task_id = f"task_{uuid.uuid4()}"
+    prompt_id = None
 
     try:
 
@@ -515,7 +516,7 @@ def handler(job):
                     if attempt == max_attempts - 1:
                         raise Exception("웹소켓 연결 시간 초과 (3분)")
                     time.sleep(5)
-            images = get_images(ws, prompt)
+            images, prompt_id = get_images(ws, prompt)
             ws.close()
 
             # 이미지가 없는 경우 처리
@@ -540,6 +541,17 @@ def handler(job):
     
             return {"error": "이미지를 찾을 수 없습니다."}
     finally:
+        # Endpoint-like cleanup: remove history + runtime dirs + free memory
+        try:
+            cleanup_script = os.getenv('FINISH_CLEANUP_SCRIPT', '/scripts/finish_cleanup.sh')
+            if os.path.exists(cleanup_script):
+                subprocess.run([
+                    cleanup_script,
+                    prompt_id or ''
+                ], check=False, env={**os.environ, 'COMFY_BASE_URL': f'http://{server_address}:8188'})
+        except Exception as cleanup_script_error:
+            logger.warning(f"Cleanup script warning: {cleanup_script_error}")
+
         cleanup_runtime_artifacts(task_id)
 
 runpod.serverless.start({"handler": handler})
