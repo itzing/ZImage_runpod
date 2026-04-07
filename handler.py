@@ -347,6 +347,84 @@ def cleanup_runtime_artifacts(task_id):
         except Exception as cleanup_error:
             logger.warning(f"Cleanup warning for {target}: {cleanup_error}")
 
+def collect_db_snapshot():
+    runtime_root = os.getenv('RUNTIME_ROOT', '/dev/shm/comfy-runtime')
+    db_paths = {
+        'runtime': os.path.join(runtime_root, 'user', 'comfyui.db'),
+        'legacy': '/ComfyUI/user/comfyui.db'
+    }
+
+    snapshot = {}
+    for key, db_path in db_paths.items():
+        try:
+            if os.path.exists(db_path):
+                snapshot[key] = {
+                    'exists': True,
+                    'size': os.path.getsize(db_path)
+                }
+            else:
+                snapshot[key] = {
+                    'exists': False,
+                    'size': 0
+                }
+        except Exception as e:
+            snapshot[key] = {'error': e.__class__.__name__}
+
+    return snapshot
+
+
+def diff_db_snapshot(before, after):
+    out = {}
+    for key in set(before.keys()) | set(after.keys()):
+        b = before.get(key, {})
+        a = after.get(key, {})
+        out[key] = {
+            'before': b,
+            'after': a,
+        }
+        if isinstance(b, dict) and isinstance(a, dict) and 'size' in b and 'size' in a:
+            out[key]['size_delta'] = a['size'] - b['size']
+    return out
+
+def collect_cleanup_state():
+    """Collect post-cleanup state summary for logging."""
+    state = {
+        'history_count': None,
+        'files': {},
+        'db': {}
+    }
+
+    try:
+        url = f"http://{server_address}:8188/history"
+        with urllib.request.urlopen(url, timeout=5) as response:
+            history = json.loads(response.read())
+        state['history_count'] = len(history) if isinstance(history, dict) else -1
+    except Exception as e:
+        state['history_count'] = f"error:{e.__class__.__name__}"
+
+    runtime_root = os.getenv('RUNTIME_ROOT', '/dev/shm/comfy-runtime')
+    for folder in ['input', 'output', 'temp']:
+        path = os.path.join(runtime_root, folder)
+        try:
+            state['files'][folder] = len(os.listdir(path)) if os.path.isdir(path) else 'missing'
+        except Exception as e:
+            state['files'][folder] = f"error:{e.__class__.__name__}"
+
+    db_paths = {
+        'runtime': os.path.join(runtime_root, 'user', 'comfyui.db'),
+        'legacy': '/ComfyUI/user/comfyui.db'
+    }
+    for key, db_path in db_paths.items():
+        try:
+            if os.path.exists(db_path):
+                state['db'][key] = {'exists': True, 'size': os.path.getsize(db_path)}
+            else:
+                state['db'][key] = {'exists': False}
+        except Exception as e:
+            state['db'][key] = {'error': e.__class__.__name__}
+
+    return state
+
 def handler(job):
     job_input = job.get("input", {})
     job_input = decrypt_secure_input(job_input)
@@ -354,6 +432,7 @@ def handler(job):
     logger.info(f"Received job input (masked): {mask_job_input_for_log(job_input)}")
     task_id = f"task_{uuid.uuid4()}"
     prompt_id = None
+    db_snapshot_before = collect_db_snapshot()
 
     try:
 
@@ -438,7 +517,7 @@ def handler(job):
         
                 # 노드 70:41: EmptySD3LatentImage는 70:69에서 자동으로 크기를 가져오므로 설정 불필요
         
-                logger.info(f"Control workflow 설정 완료: condition_image={condition_image_path}, prompt={prompt_text[:50]}...")
+                logger.info("Control workflow 설정 완료: condition_image=..., prompt=...")
             elif has_lora:
                 # z_image_lora.json 워크플로우 설정
                 # 노드 58: PrimitiveStringMultiline (프롬프트)
@@ -465,7 +544,7 @@ def handler(job):
                 prompt["59:35"]["inputs"]["lora_name"] = lora_path
                 prompt["59:35"]["inputs"]["strength_model"] = lora_strength
         
-                logger.info(f"LoRA workflow 설정 완료: lora={lora_path}, strength={lora_strength}, prompt={prompt_text[:50]}...")
+                logger.info("LoRA workflow 설정 완료: lora=..., strength=..., prompt=...")
             else:
                 # z_image.json 워크플로우 설정
                 # 노드 45: CLIPTextEncode (프롬프트)
@@ -480,7 +559,7 @@ def handler(job):
                 prompt["41"]["inputs"]["width"] = adjusted_width
                 prompt["41"]["inputs"]["height"] = adjusted_height
         
-                logger.info(f"Text-only workflow 설정 완료: prompt={prompt_text[:50]}...")
+                logger.info("Text-only workflow 설정 완료: prompt=...")
 
             ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
             logger.info(f"Connecting to WebSocket: {ws_url}")
@@ -553,5 +632,16 @@ def handler(job):
             logger.warning(f"Cleanup script warning: {cleanup_script_error}")
 
         cleanup_runtime_artifacts(task_id)
+
+        try:
+            cleanup_state = collect_cleanup_state()
+            db_snapshot_after = collect_db_snapshot()
+            db_diff = diff_db_snapshot(db_snapshot_before, db_snapshot_after)
+            logger.info(
+                f"Cleanup verify: history={cleanup_state['history_count']}, "
+                f"files={cleanup_state['files']}, db_diff={db_diff}"
+            )
+        except Exception as cleanup_verify_error:
+            logger.warning(f"Cleanup verify warning: {cleanup_verify_error}")
 
 runpod.serverless.start({"handler": handler})

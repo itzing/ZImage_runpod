@@ -28,12 +28,13 @@ post_json() {
   curl -fsS -X POST "$COMFY_BASE_URL/$endpoint"     -H 'Content-Type: application/json'     --data "$payload" >/dev/null || true
 }
 
-# 1) Remove history for this prompt (or clear all if prompt_id not provided)
+# 1) Remove history only for current prompt_id.
+# If prompt_id is missing, do NOT clear global history.
 if [[ -n "$PROMPT_ID" ]]; then
   payload=$(printf '{"delete":["%s"]}' "$PROMPT_ID")
   post_json "history" "$payload"
 else
-  post_json "history" '{"clear":true}'
+  echo "[cleanup] prompt_id is empty; skip history delete"
 fi
 
 # 2) Clear runtime dirs
