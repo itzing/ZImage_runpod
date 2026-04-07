@@ -11,6 +11,7 @@ import urllib.parse
 import binascii # Base64 에러 처리를 위해 import
 import subprocess
 import time
+import shutil
 import boto3
 from botocore.exceptions import NoCredentialsError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -313,195 +314,234 @@ def load_workflow(workflow_path):
     with open(workflow_path, 'r', encoding='utf-8') as file:
         return json.load(file)
 
+def cleanup_runtime_artifacts(task_id):
+    """Cleanup endpoint-local artifacts after each task."""
+    paths_to_clean = [
+        os.path.abspath(task_id),
+        '/ComfyUI/input',
+        '/ComfyUI/output',
+        '/ComfyUI/temp',
+    ]
+
+    for target in paths_to_clean:
+        try:
+            if not os.path.exists(target):
+                continue
+
+            # Remove contents only for shared ComfyUI dirs
+            if target in ['/ComfyUI/input', '/ComfyUI/output', '/ComfyUI/temp']:
+                for name in os.listdir(target):
+                    path = os.path.join(target, name)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        try:
+                            os.remove(path)
+                        except FileNotFoundError:
+                            pass
+            else:
+                if os.path.isdir(target):
+                    shutil.rmtree(target, ignore_errors=True)
+                elif os.path.isfile(target):
+                    os.remove(target)
+        except Exception as cleanup_error:
+            logger.warning(f"Cleanup warning for {target}: {cleanup_error}")
+
 def handler(job):
     job_input = job.get("input", {})
     job_input = decrypt_secure_input(job_input)
 
-    logger.info(f"Received job input: {mask_job_input_for_log(job_input)}")
+    # Temporary verbose request logging (requested for debugging)
+    logger.info(f"Received job input (raw): {job_input}")
+    logger.info(f"Received job input (masked): {mask_job_input_for_log(job_input)}")
     task_id = f"task_{uuid.uuid4()}"
 
-    # condition 이미지 입력 처리 (condition_image, condition_image_path, condition_image_url, condition_image_base64 중 하나만 사용)
-    condition_image_path = None
-    if "condition_image" in job_input:
-        # condition_image 파라미터가 제공된 경우, 자동으로 타입 감지
-        condition_image_data = job_input["condition_image"]
-        if isinstance(condition_image_data, str):
-            if condition_image_data.startswith("http://") or condition_image_data.startswith("https://"):
-                condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "url")
-            elif os.path.exists(condition_image_data) or condition_image_data.startswith("/"):
-                condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "path")
-            else:
-                # Base64로 간주
-                condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "base64")
-        else:
-            raise Exception("condition_image 파라미터는 문자열이어야 합니다.")
-    elif "condition_image_path" in job_input:
-        condition_image_path = process_input(job_input["condition_image_path"], task_id, "condition_image.jpg", "path")
-    elif "condition_image_url" in job_input:
-        condition_image_path = process_input(job_input["condition_image_url"], task_id, "condition_image.jpg", "url")
-    elif "condition_image_base64" in job_input:
-        condition_image_path = process_input(job_input["condition_image_base64"], task_id, "condition_image.jpg", "base64")
+    try:
 
-    # LoRA 확인
-    lora_list = job_input.get("lora", [])
-    has_lora = lora_list and len(lora_list) > 0
-    
-    # 워크플로우 파일 선택 (우선순위: condition_image > lora > 기본)
-    if condition_image_path:
-        workflow_file = "workflow/z_image_control.json"
-        logger.info(f"Using control workflow: {workflow_file}")
-    elif has_lora:
-        workflow_file = "workflow/z_image_lora.json"
-        logger.info(f"Using LoRA workflow: {workflow_file}")
-    else:
-        workflow_file = "workflow/z_image.json"
-        logger.info(f"Using text-only workflow: {workflow_file}")
-
-    prompt = load_workflow(workflow_file)
-
-    # 공통 설정
-    prompt_text = job_input.get("prompt", "")
-    seed = job_input.get("seed", 533303727624653)
-    steps = job_input.get("steps", 9)
-    cfg = job_input.get("cfg", 1.0)
-    width = job_input.get("width", 1024)
-    height = job_input.get("height", 1024)
-    negative_prompt = job_input.get("negative_prompt", job_input.get("negativePrompt", ""))
-    
-    # 해상도(폭/높이) 16배수 보정
-    adjusted_width = to_nearest_multiple_of_16(width)
-    adjusted_height = to_nearest_multiple_of_16(height)
-    if adjusted_width != width:
-        logger.info(f"Width adjusted to nearest multiple of 16: {width} -> {adjusted_width}")
-    if adjusted_height != height:
-        logger.info(f"Height adjusted to nearest multiple of 16: {height} -> {adjusted_height}")
-
-    if condition_image_path:
-        # z_image_control.json 워크플로우 설정
-        # 노드 58: LoadImage (condition 이미지)
-        prompt["58"]["inputs"]["image"] = condition_image_path
-        
-        # 노드 70:45: CLIPTextEncode (프롬프트)
-        prompt["70:45"]["inputs"]["text"] = prompt_text
-        
-        # 노드 70:44: KSampler (seed, steps, cfg)
-        prompt["70:44"]["inputs"]["seed"] = seed
-        prompt["70:44"]["inputs"]["steps"] = steps
-        prompt["70:44"]["inputs"]["cfg"] = cfg
-        
-        # 노드 57: Canny (low_threshold, high_threshold) - 선택적
-        if "canny_low_threshold" in job_input:
-            prompt["57"]["inputs"]["low_threshold"] = job_input["canny_low_threshold"]
-        if "canny_high_threshold" in job_input:
-            prompt["57"]["inputs"]["high_threshold"] = job_input["canny_high_threshold"]
-        
-        # 노드 70:60: QwenImageDiffsynthControlnet (strength) - 선택적
-        if "controlnet_strength" in job_input:
-            prompt["70:60"]["inputs"]["strength"] = job_input["controlnet_strength"]
-        
-        # 노드 70:41: EmptySD3LatentImage는 70:69에서 자동으로 크기를 가져오므로 설정 불필요
-        
-        logger.info(f"Control workflow 설정 완료: condition_image={condition_image_path}, prompt={prompt_text[:50]}...")
-    elif has_lora:
-        # z_image_lora.json 워크플로우 설정
-        # 노드 58: PrimitiveStringMultiline (프롬프트)
-        prompt["58"]["inputs"]["value"] = prompt_text
-        
-        # 노드 59:13: EmptySD3LatentImage (width, height)
-        prompt["59:13"]["inputs"]["width"] = adjusted_width
-        prompt["59:13"]["inputs"]["height"] = adjusted_height
-        
-        # 노드 59:3: KSampler (seed, steps, cfg)
-        prompt["59:3"]["inputs"]["seed"] = seed
-        prompt["59:3"]["inputs"]["steps"] = steps
-        prompt["59:3"]["inputs"]["cfg"] = cfg
-        
-        # 노드 59:35: LoraLoaderModelOnly (lora_name, strength_model)
-        # 첫 번째 LoRA만 사용 (나중에 여러 개 지원 가능)
-        first_lora = lora_list[0]
-        if isinstance(first_lora, list) and len(first_lora) >= 2:
-            lora_path = first_lora[0]
-            lora_strength = first_lora[1]
-        else:
-            raise Exception("LoRA 형식이 올바르지 않습니다. [파일경로, strength] 형태여야 합니다.")
-        
-        prompt["59:35"]["inputs"]["lora_name"] = lora_path
-        prompt["59:35"]["inputs"]["strength_model"] = lora_strength
-        
-        logger.info(f"LoRA workflow 설정 완료: lora={lora_path}, strength={lora_strength}, prompt={prompt_text[:50]}...")
-    else:
-        # z_image.json 워크플로우 설정
-        # 노드 45: CLIPTextEncode (프롬프트)
-        prompt["45"]["inputs"]["text"] = prompt_text
-        
-        # 노드 44: KSampler (seed, steps, cfg)
-        prompt["44"]["inputs"]["seed"] = seed
-        prompt["44"]["inputs"]["steps"] = steps
-        prompt["44"]["inputs"]["cfg"] = cfg
-        
-        # 노드 41: EmptySD3LatentImage (width, height)
-        prompt["41"]["inputs"]["width"] = adjusted_width
-        prompt["41"]["inputs"]["height"] = adjusted_height
-        
-        logger.info(f"Text-only workflow 설정 완료: prompt={prompt_text[:50]}...")
-
-    ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
-    logger.info(f"Connecting to WebSocket: {ws_url}")
-    
-    # 먼저 HTTP 연결이 가능한지 확인
-    http_url = f"http://{server_address}:8188/"
-    logger.info(f"Checking HTTP connection to: {http_url}")
-    
-    # HTTP 연결 확인 (최대 1분)
-    max_http_attempts = 180
-    for http_attempt in range(max_http_attempts):
-        try:
-            import urllib.request
-            response = urllib.request.urlopen(http_url, timeout=5)
-            logger.info(f"HTTP 연결 성공 (시도 {http_attempt+1})")
-            break
-        except Exception as e:
-            logger.warning(f"HTTP 연결 실패 (시도 {http_attempt+1}/{max_http_attempts}): {e}")
-            if http_attempt == max_http_attempts - 1:
-                raise Exception("ComfyUI 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.")
-            time.sleep(1)
-    
-    ws = websocket.WebSocket()
-    # 웹소켓 연결 시도 (최대 3분)
-    max_attempts = int(180/5)  # 3분 (5초에 한 번씩 시도)
-    for attempt in range(max_attempts):
-        try:
-            ws.connect(ws_url)
-            logger.info(f"웹소켓 연결 성공 (시도 {attempt+1})")
-            break
-        except Exception as e:
-            logger.warning(f"웹소켓 연결 실패 (시도 {attempt+1}/{max_attempts}): {e}")
-            if attempt == max_attempts - 1:
-                raise Exception("웹소켓 연결 시간 초과 (3분)")
-            time.sleep(5)
-    images = get_images(ws, prompt)
-    ws.close()
-
-    # 이미지가 없는 경우 처리
-    if not images:
-        return {"error": "이미지를 생성할 수 없습니다."}
-    
-    # 첫 번째 이미지 반환
-    for node_id in images:
-        if images[node_id]:
-            image_data = images[node_id][0]
-            
-            if job_input.get("return_url", False):
-                # R2 업로드
-                file_name = f"{task_id}.png"
-                image_url = upload_to_r2(image_data, file_name)
-                if image_url:
-                    return {"image_url": image_url}
+            # condition 이미지 입력 처리 (condition_image, condition_image_path, condition_image_url, condition_image_base64 중 하나만 사용)
+            condition_image_path = None
+            if "condition_image" in job_input:
+                # condition_image 파라미터가 제공된 경우, 자동으로 타입 감지
+                condition_image_data = job_input["condition_image"]
+                if isinstance(condition_image_data, str):
+                    if condition_image_data.startswith("http://") or condition_image_data.startswith("https://"):
+                        condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "url")
+                    elif os.path.exists(condition_image_data) or condition_image_data.startswith("/"):
+                        condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "path")
+                    else:
+                        # Base64로 간주
+                        condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "base64")
                 else:
-                     logger.warning("R2 업로드 실패, Base64 이미지를 반환합니다.")
+                    raise Exception("condition_image 파라미터는 문자열이어야 합니다.")
+            elif "condition_image_path" in job_input:
+                condition_image_path = process_input(job_input["condition_image_path"], task_id, "condition_image.jpg", "path")
+            elif "condition_image_url" in job_input:
+                condition_image_path = process_input(job_input["condition_image_url"], task_id, "condition_image.jpg", "url")
+            elif "condition_image_base64" in job_input:
+                condition_image_path = process_input(job_input["condition_image_base64"], task_id, "condition_image.jpg", "base64")
 
-            return {"image": image_data}
+            # LoRA 확인
+            lora_list = job_input.get("lora", [])
+            has_lora = lora_list and len(lora_list) > 0
     
-    return {"error": "이미지를 찾을 수 없습니다."}
+            # 워크플로우 파일 선택 (우선순위: condition_image > lora > 기본)
+            if condition_image_path:
+                workflow_file = "workflow/z_image_control.json"
+                logger.info(f"Using control workflow: {workflow_file}")
+            elif has_lora:
+                workflow_file = "workflow/z_image_lora.json"
+                logger.info(f"Using LoRA workflow: {workflow_file}")
+            else:
+                workflow_file = "workflow/z_image.json"
+                logger.info(f"Using text-only workflow: {workflow_file}")
+
+            prompt = load_workflow(workflow_file)
+
+            # 공통 설정
+            prompt_text = job_input.get("prompt", "")
+            seed = job_input.get("seed", 533303727624653)
+            steps = job_input.get("steps", 9)
+            cfg = job_input.get("cfg", 1.0)
+            width = job_input.get("width", 1024)
+            height = job_input.get("height", 1024)
+            negative_prompt = job_input.get("negative_prompt", job_input.get("negativePrompt", ""))
+    
+            # 해상도(폭/높이) 16배수 보정
+            adjusted_width = to_nearest_multiple_of_16(width)
+            adjusted_height = to_nearest_multiple_of_16(height)
+            if adjusted_width != width:
+                logger.info(f"Width adjusted to nearest multiple of 16: {width} -> {adjusted_width}")
+            if adjusted_height != height:
+                logger.info(f"Height adjusted to nearest multiple of 16: {height} -> {adjusted_height}")
+
+            if condition_image_path:
+                # z_image_control.json 워크플로우 설정
+                # 노드 58: LoadImage (condition 이미지)
+                prompt["58"]["inputs"]["image"] = condition_image_path
+        
+                # 노드 70:45: CLIPTextEncode (프롬프트)
+                prompt["70:45"]["inputs"]["text"] = prompt_text
+        
+                # 노드 70:44: KSampler (seed, steps, cfg)
+                prompt["70:44"]["inputs"]["seed"] = seed
+                prompt["70:44"]["inputs"]["steps"] = steps
+                prompt["70:44"]["inputs"]["cfg"] = cfg
+        
+                # 노드 57: Canny (low_threshold, high_threshold) - 선택적
+                if "canny_low_threshold" in job_input:
+                    prompt["57"]["inputs"]["low_threshold"] = job_input["canny_low_threshold"]
+                if "canny_high_threshold" in job_input:
+                    prompt["57"]["inputs"]["high_threshold"] = job_input["canny_high_threshold"]
+        
+                # 노드 70:60: QwenImageDiffsynthControlnet (strength) - 선택적
+                if "controlnet_strength" in job_input:
+                    prompt["70:60"]["inputs"]["strength"] = job_input["controlnet_strength"]
+        
+                # 노드 70:41: EmptySD3LatentImage는 70:69에서 자동으로 크기를 가져오므로 설정 불필요
+        
+                logger.info(f"Control workflow 설정 완료: condition_image={condition_image_path}, prompt={prompt_text[:50]}...")
+            elif has_lora:
+                # z_image_lora.json 워크플로우 설정
+                # 노드 58: PrimitiveStringMultiline (프롬프트)
+                prompt["58"]["inputs"]["value"] = prompt_text
+        
+                # 노드 59:13: EmptySD3LatentImage (width, height)
+                prompt["59:13"]["inputs"]["width"] = adjusted_width
+                prompt["59:13"]["inputs"]["height"] = adjusted_height
+        
+                # 노드 59:3: KSampler (seed, steps, cfg)
+                prompt["59:3"]["inputs"]["seed"] = seed
+                prompt["59:3"]["inputs"]["steps"] = steps
+                prompt["59:3"]["inputs"]["cfg"] = cfg
+        
+                # 노드 59:35: LoraLoaderModelOnly (lora_name, strength_model)
+                # 첫 번째 LoRA만 사용 (나중에 여러 개 지원 가능)
+                first_lora = lora_list[0]
+                if isinstance(first_lora, list) and len(first_lora) >= 2:
+                    lora_path = first_lora[0]
+                    lora_strength = first_lora[1]
+                else:
+                    raise Exception("LoRA 형식이 올바르지 않습니다. [파일경로, strength] 형태여야 합니다.")
+        
+                prompt["59:35"]["inputs"]["lora_name"] = lora_path
+                prompt["59:35"]["inputs"]["strength_model"] = lora_strength
+        
+                logger.info(f"LoRA workflow 설정 완료: lora={lora_path}, strength={lora_strength}, prompt={prompt_text[:50]}...")
+            else:
+                # z_image.json 워크플로우 설정
+                # 노드 45: CLIPTextEncode (프롬프트)
+                prompt["45"]["inputs"]["text"] = prompt_text
+        
+                # 노드 44: KSampler (seed, steps, cfg)
+                prompt["44"]["inputs"]["seed"] = seed
+                prompt["44"]["inputs"]["steps"] = steps
+                prompt["44"]["inputs"]["cfg"] = cfg
+        
+                # 노드 41: EmptySD3LatentImage (width, height)
+                prompt["41"]["inputs"]["width"] = adjusted_width
+                prompt["41"]["inputs"]["height"] = adjusted_height
+        
+                logger.info(f"Text-only workflow 설정 완료: prompt={prompt_text[:50]}...")
+
+            ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
+            logger.info(f"Connecting to WebSocket: {ws_url}")
+    
+            # 먼저 HTTP 연결이 가능한지 확인
+            http_url = f"http://{server_address}:8188/"
+            logger.info(f"Checking HTTP connection to: {http_url}")
+    
+            # HTTP 연결 확인 (최대 1분)
+            max_http_attempts = 180
+            for http_attempt in range(max_http_attempts):
+                try:
+                    import urllib.request
+                    response = urllib.request.urlopen(http_url, timeout=5)
+                    logger.info(f"HTTP 연결 성공 (시도 {http_attempt+1})")
+                    break
+                except Exception as e:
+                    logger.warning(f"HTTP 연결 실패 (시도 {http_attempt+1}/{max_http_attempts}): {e}")
+                    if http_attempt == max_http_attempts - 1:
+                        raise Exception("ComfyUI 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.")
+                    time.sleep(1)
+    
+            ws = websocket.WebSocket()
+            # 웹소켓 연결 시도 (최대 3분)
+            max_attempts = int(180/5)  # 3분 (5초에 한 번씩 시도)
+            for attempt in range(max_attempts):
+                try:
+                    ws.connect(ws_url)
+                    logger.info(f"웹소켓 연결 성공 (시도 {attempt+1})")
+                    break
+                except Exception as e:
+                    logger.warning(f"웹소켓 연결 실패 (시도 {attempt+1}/{max_attempts}): {e}")
+                    if attempt == max_attempts - 1:
+                        raise Exception("웹소켓 연결 시간 초과 (3분)")
+                    time.sleep(5)
+            images = get_images(ws, prompt)
+            ws.close()
+
+            # 이미지가 없는 경우 처리
+            if not images:
+                return {"error": "이미지를 생성할 수 없습니다."}
+    
+            # 첫 번째 이미지 반환
+            for node_id in images:
+                if images[node_id]:
+                    image_data = images[node_id][0]
+            
+                    if job_input.get("return_url", False):
+                        # R2 업로드
+                        file_name = f"{task_id}.png"
+                        image_url = upload_to_r2(image_data, file_name)
+                        if image_url:
+                            return {"image_url": image_url}
+                        else:
+                             logger.warning("R2 업로드 실패, Base64 이미지를 반환합니다.")
+
+                    return {"image": image_data}
+    
+            return {"error": "이미지를 찾을 수 없습니다."}
+    finally:
+        cleanup_runtime_artifacts(task_id)
 
 runpod.serverless.start({"handler": handler})
