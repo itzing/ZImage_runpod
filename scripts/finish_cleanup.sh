@@ -30,7 +30,8 @@ post_json() {
 
 # 1) Remove history for this prompt (or clear all if prompt_id not provided)
 if [[ -n "$PROMPT_ID" ]]; then
-  post_json "history" "{"delete":["$PROMPT_ID"]}"
+  payload=$(printf '{"delete":["%s"]}' "$PROMPT_ID")
+  post_json "history" "$payload"
 else
   post_json "history" '{"clear":true}'
 fi

@@ -16,6 +16,7 @@ INPUT_DIR="${INPUT_DIR:-$RUNTIME_ROOT/input}"
 OUTPUT_DIR="${OUTPUT_DIR:-$RUNTIME_ROOT/output}"
 TEMP_DIR="${TEMP_DIR:-$RUNTIME_ROOT/temp}"
 USER_DIR="${USER_DIR:-$RUNTIME_ROOT/user}"
+COMFY_SILENT="${COMFY_SILENT:-1}"
 
 mkdir -p "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR" "$USER_DIR"
 
@@ -25,4 +26,8 @@ mkdir -p "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR" "$USER_DIR"
 
 cd "$COMFY_ROOT"
 
-exec "$PYTHON_BIN" main.py   --listen 0.0.0.0   --port "$PORT"   --input-directory "$INPUT_DIR"   --output-directory "$OUTPUT_DIR"   --temp-directory "$TEMP_DIR"   --user-directory "$USER_DIR"
+if [[ "$COMFY_SILENT" == "1" ]]; then
+  exec "$PYTHON_BIN" main.py     --listen 0.0.0.0     --port "$PORT"     --input-directory "$INPUT_DIR"     --output-directory "$OUTPUT_DIR"     --temp-directory "$TEMP_DIR"     --user-directory "$USER_DIR"     >/dev/null 2>&1
+else
+  exec "$PYTHON_BIN" main.py     --listen 0.0.0.0     --port "$PORT"     --input-directory "$INPUT_DIR"     --output-directory "$OUTPUT_DIR"     --temp-directory "$TEMP_DIR"     --user-directory "$USER_DIR"
+fi

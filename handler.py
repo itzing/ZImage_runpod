@@ -351,8 +351,6 @@ def handler(job):
     job_input = job.get("input", {})
     job_input = decrypt_secure_input(job_input)
 
-    # Temporary verbose request logging (requested for debugging)
-    logger.info(f"Received job input (raw): {job_input}")
     logger.info(f"Received job input (masked): {mask_job_input_for_log(job_input)}")
     task_id = f"task_{uuid.uuid4()}"
 
