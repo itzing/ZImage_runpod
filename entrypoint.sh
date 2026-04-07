@@ -5,7 +5,13 @@ set -e
 
 # Start ComfyUI in the background (RAM mode)
 echo "Starting ComfyUI in RAM mode..."
-COMFY_ROOT=/ComfyUI PYTHON_BIN=/usr/bin/python3 COMFY_SILENT=${COMFY_SILENT:-1} /scripts/start_comfy_ram.sh 8188 &
+RUNTIME_ROOT=${RUNTIME_ROOT:-/dev/shm/comfy-runtime}
+mkdir -p "$RUNTIME_ROOT/input" "$RUNTIME_ROOT/output" "$RUNTIME_ROOT/temp" "$RUNTIME_ROOT/user"
+python /ComfyUI/main.py --listen --use-sage-attention \
+  --input-directory "$RUNTIME_ROOT/input" \
+  --output-directory "$RUNTIME_ROOT/output" \
+  --temp-directory "$RUNTIME_ROOT/temp" \
+  --user-directory "$RUNTIME_ROOT/user" &
 
 # Wait for ComfyUI to be ready
 echo "Waiting for ComfyUI to be ready..."
