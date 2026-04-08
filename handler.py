@@ -66,6 +66,31 @@ def decode_encryption_key():
     return key
 
 
+def encrypt_output_image(image_data_base64):
+    """Encrypt image bytes for response payload using FIELD_ENC_KEY_B64."""
+    key = decode_encryption_key()
+    if not key:
+        raise Exception("FIELD_ENC_KEY_B64 is required to encrypt image output")
+
+    try:
+        image_bytes = base64.b64decode(image_data_base64)
+    except Exception as error:
+        raise Exception(f"Failed to decode image bytes for encryption: {error}")
+
+    nonce = os.urandom(12)
+    aad = b'engui:zimage:result:v1'
+    ciphertext = AESGCM(key).encrypt(nonce, image_bytes, aad)
+
+    return {
+        'v': 1,
+        'alg': 'AES-256-GCM',
+        'kid': os.getenv('ZIMAGE_FIELD_ENC_KID', 'zimage-k1'),
+        'nonce': base64.b64encode(nonce).decode('utf-8'),
+        'ciphertext': base64.b64encode(ciphertext).decode('utf-8'),
+        'mime': 'image/png',
+    }
+
+
 def decrypt_secure_input(job_input):
     secure = job_input.get('_secure')
     if not secure:
@@ -606,18 +631,21 @@ def handler(job):
             for node_id in images:
                 if images[node_id]:
                     image_data = images[node_id][0]
-            
+
+                    encrypted_image = encrypt_output_image(image_data)
+                    response_payload = {"image_encrypted": encrypted_image}
+
                     if job_input.get("return_url", False):
-                        # R2 업로드
+                        # Optional R2 upload
                         file_name = f"{task_id}.png"
                         image_url = upload_to_r2(image_data, file_name)
                         if image_url:
-                            return {"image_url": image_url}
+                            response_payload["image_url"] = image_url
                         else:
-                             logger.warning("R2 업로드 실패, Base64 이미지를 반환합니다.")
+                            logger.warning("R2 upload failed; returning encrypted image only.")
 
-                    return {"image": image_data}
-    
+                    return response_payload
+
             return {"error": "이미지를 찾을 수 없습니다."}
     finally:
         # Endpoint-like cleanup: remove history + runtime dirs + free memory
