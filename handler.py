@@ -71,7 +71,7 @@ def decode_encryption_key():
 
 
 def serialize_binding(binding):
-    return json.dumps(binding, separators=(',', ':')).encode('utf-8')
+    return json.dumps(binding, separators=(',', ':'), sort_keys=True).encode('utf-8')
 
 
 def unwrap_dek(master_key, wrapped_key):
