@@ -1,0 +1,9 @@
+{
+  "transport_result": {
+    "status": "failed",
+    "error": {
+      "code": "TRANSPORT_RESULT_WRITE_FAILED",
+      "message": "Failed to write encrypted transport artifact"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 ---
 id: ZIMG-03
 title: Document legacy fallbacks and add regression smoke coverage for ZImage migration
-status: Planned
+status: In Progress
 assignee: []
 created_date: '2026-04-10 19:30'
 labels:
@@ -13,6 +13,7 @@ dependencies:
   - ZIMG-02
 documentation:
   - /var/lib/openclaw/.openclaw/workspace/projects/engui-endpoints/zimage-security-and-runtime-pattern.md
+  - /var/lib/openclaw/.openclaw/workspace/projects/engui-endpoints/ZImage_runpod-zimage/SECURE-CONTRACT.md
 priority: medium
 ---
 
@@ -30,3 +31,9 @@ Document the new secure contract in the repo itself and add at least lightweight
 - repo README or dedicated doc describes the migration-era contract
 - manual or scripted smoke steps exist for secure and fallback flows
 - known legacy fallback scope is explicit so it can be removed later
+
+## Progress Notes
+
+- Added `SECURE-CONTRACT.md` with migration-era request/response contract details
+- Added example payloads under `examples/` for secure request and `transport_result` success/failure shapes
+- README now links to the secure migration contract and examples

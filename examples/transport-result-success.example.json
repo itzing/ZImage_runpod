@@ -1,0 +1,23 @@
+{
+  "transport_result": {
+    "status": "completed",
+    "result_media": {
+      "kind": "image",
+      "mime": "image/png",
+      "storage_path": "/runpod-volume/secure-jobs/job_123/attempt_123/outputs/result.bin",
+      "envelope": {
+        "v": 1,
+        "wrapped_key": "v1:<base64-wrapped-dek>",
+        "nonce": "<base64-nonce>",
+        "binding": {
+          "job_id": "job_123",
+          "model_id": "z-image",
+          "attempt_id": "attempt_123",
+          "direction": "endpoint_to_engui",
+          "role": "result",
+          "kind": "image"
+        }
+      }
+    }
+  }
+}

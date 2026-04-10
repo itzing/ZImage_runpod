@@ -1,0 +1,45 @@
+{
+  "input": {
+    "seed": 12345,
+    "steps": 9,
+    "cfg": 1.0,
+    "width": 1024,
+    "height": 1024,
+    "transport_request": {
+      "output_dir": "/runpod-volume/secure-jobs/job_123/attempt_123/outputs/"
+    },
+    "media_inputs": [
+      {
+        "role": "condition_image",
+        "kind": "image",
+        "mime": "image/png",
+        "storage_path": "/runpod-volume/secure-jobs/job_123/attempt_123/inputs/condition_image.bin",
+        "envelope": {
+          "v": 1,
+          "wrapped_key": "v1:<base64-wrapped-dek>",
+          "nonce": "<base64-nonce>",
+          "binding": {
+            "job_id": "job_123",
+            "model_id": "z-image",
+            "attempt_id": "attempt_123",
+            "direction": "engui_to_endpoint",
+            "role": "condition_image",
+            "kind": "image"
+          }
+        }
+      }
+    ],
+    "_secure": {
+      "v": 1,
+      "wrapped_key": "v1:<base64-wrapped-dek>",
+      "nonce": "<base64-nonce>",
+      "ciphertext": "<base64-ciphertext-with-tag>",
+      "binding": {
+        "job_id": "job_123",
+        "model_id": "z-image",
+        "attempt_id": "attempt_123",
+        "direction": "engui_to_endpoint"
+      }
+    }
+  }
+}

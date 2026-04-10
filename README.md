@@ -1,6 +1,8 @@
 # Flux Krea for RunPod Serverless
 [한국어 README 보기](README_kr.md)
 
+> Secure RunPod migration note: see `SECURE-CONTRACT.md` for the Engui migration-era contract, including `_secure`, `media_inputs`, `transport_request`, `transport_result`, and legacy fallback scope.
+
 This project is a template designed to easily deploy and use [Flux Krea](https://bfl.ai/blog/flux-1-krea-dev) in the RunPod Serverless environment.
 
 [![Runpod](https://api.runpod.io/badge/wlsdml1114/Flux-krea_Runpod_hub)](https://console.runpod.io/hub/wlsdml1114/Flux-krea_Runpod_hub)
@@ -161,6 +163,13 @@ If the job fails, it returns a JSON object containing an error message.
 ```
 
 ## 🛠️ Usage and API Reference
+
+For the current Engui secure migration, request/response examples also live under `examples/`:
+- `examples/secure-text-only-request.example.json`
+- `examples/secure-condition-image-request.example.json`
+- `examples/transport-result-success.example.json`
+- `examples/transport-result-failure.example.json`
+
 
 1.  Create a Serverless Endpoint on RunPod based on this repository.
 2.  Once the build is complete and the endpoint is active, submit jobs via HTTP POST requests according to the API Reference below.
