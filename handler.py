@@ -25,6 +25,7 @@ server_address = os.getenv('SERVER_ADDRESS', '127.0.0.1')
 client_id = str(uuid.uuid4())
 
 WRAPPED_KEY_PREFIX = 'v1:'
+MOCK_RESULT_IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAA/ElEQVR42u3RgQkAMBACMUf/zW3XEAIOcJI0nd54/v4DAPIBeCAfgAfyAXggH4AH8gF4IB+AB/IBeCAfgAfyAXggH4AH8gF4IB+AB/IBeCAfgAfyAXggH4AHAOR7AEC+BwDkewBAvgcA5HsAQL4HAOR7AEC+BwDkewBAvgcA5HsAQL4HAOR7AEC+BwDk21+u2wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACuD9FLlvr9zn4JAAAAAElFTkSuQmCC'
 
 
 def mask_job_input_for_log(job_input):
@@ -229,6 +230,87 @@ def get_secure_media_input(job_input, roles):
         if descriptor.get('role') in roles:
             return descriptor
     return None
+
+
+def is_mock_secure_flow_enabled():
+    value = (os.getenv('ZIMAGE_MOCK_SECURE_FLOW') or '').strip().lower()
+    return value in ('1', 'true', 'yes', 'on')
+
+
+def get_mock_failure_mode():
+    return (os.getenv('ZIMAGE_MOCK_FAILURE') or '').strip().lower()
+
+
+def build_mock_secure_response(job, job_input, transport_request, task_id):
+    failure_mode = get_mock_failure_mode()
+    if failure_mode in ('transport', 'result'):
+        return {
+            'transport_result': normalize_transport_failure(
+                'MOCK_TRANSPORT_FAILURE',
+                'Mock secure flow forced a transport failure'
+            )
+        }
+
+    if not transport_request:
+        raise Exception('Mock secure flow requires transport_request.output_dir')
+
+    secure_binding = job_input.get('__secure_binding', {}) or {}
+    lora_list = job_input.get('lora', []) if isinstance(job_input.get('lora'), list) else []
+    has_lora = len(lora_list) > 0
+    workflow_mode = 'lora' if has_lora else 'text-only'
+    first_lora_path = None
+    first_lora_weight = None
+    if has_lora:
+        first_lora = lora_list[0]
+        if isinstance(first_lora, list) and len(first_lora) >= 1:
+            first_lora_path = first_lora[0]
+        if isinstance(first_lora, list) and len(first_lora) >= 2:
+            first_lora_weight = first_lora[1]
+
+    job_id = secure_binding.get('job_id') or job_input.get('job_id') or job_input.get('jobId')
+    if not job_id:
+        if isinstance(job.get('id'), str) and job.get('id'):
+            job_id = job.get('id')
+        elif isinstance(job.get('id'), dict):
+            job_id = job.get('id').get('id') or job.get('id').get('jobId')
+    if not job_id:
+        job_id = 'unknown-job'
+
+    attempt_id = secure_binding.get('attempt_id') or job_input.get('attempt_id') or 'unknown-attempt'
+    model_id = secure_binding.get('model_id') or job_input.get('model_id') or 'z-image'
+    output_path = os.path.join(transport_request['output_dir'], 'result.bin')
+
+    image_bytes = base64.b64decode(MOCK_RESULT_IMAGE_BASE64)
+    transport_result = encrypt_result_to_transport(
+        image_bytes,
+        job_id,
+        model_id,
+        attempt_id,
+        output_path,
+        'image',
+        'image/png'
+    )
+
+    response_payload = {
+        'transport_result': transport_result,
+        'mock': {
+            'enabled': True,
+            'task_id': task_id,
+            'mode': 'secure-transport-success',
+            'workflow_mode': workflow_mode,
+            'lora_count': len(lora_list),
+            'first_lora_path': first_lora_path,
+            'first_lora_weight': first_lora_weight,
+        }
+    }
+
+    if job_input.get('return_url', False):
+        file_name = f'{task_id}-mock.png'
+        image_url = upload_to_r2(MOCK_RESULT_IMAGE_BASE64, file_name)
+        if image_url:
+            response_payload['image_url'] = image_url
+
+    return response_payload
 
 
 def encrypt_output_image(image_data_base64):
@@ -672,6 +754,10 @@ def handler(job):
                 condition_image_path = process_input(job_input["condition_image_url"], task_id, "condition_image.jpg", "url")
             elif "condition_image_base64" in job_input:
                 condition_image_path = process_input(job_input["condition_image_base64"], task_id, "condition_image.jpg", "base64")
+
+            if is_mock_secure_flow_enabled():
+                logger.info('Mock secure flow is enabled, skipping ComfyUI execution and returning synthetic transport result')
+                return build_mock_secure_response(job, job_input, transport_request, task_id)
 
             # LoRA 확인
             lora_list = job_input.get("lora", [])
