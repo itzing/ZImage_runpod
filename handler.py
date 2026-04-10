@@ -15,6 +15,7 @@ import shutil
 import boto3
 from botocore.exceptions import NoCredentialsError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 server_address = os.getenv('SERVER_ADDRESS', '127.0.0.1')
 client_id = str(uuid.uuid4())
+
+WRAPPED_KEY_PREFIX = 'v1:'
 
 
 def mask_job_input_for_log(job_input):
@@ -66,6 +69,168 @@ def decode_encryption_key():
     return key
 
 
+def serialize_binding(binding):
+    return json.dumps(binding, separators=(',', ':')).encode('utf-8')
+
+
+def unwrap_dek(master_key, wrapped_key):
+    if not isinstance(wrapped_key, str) or not wrapped_key.startswith(WRAPPED_KEY_PREFIX):
+        raise Exception('Wrapped key prefix is invalid')
+
+    try:
+        payload = base64.b64decode(wrapped_key[len(WRAPPED_KEY_PREFIX):])
+    except Exception as error:
+        raise Exception(f'Wrapped key must be valid base64: {error}')
+
+    if len(payload) <= 28:
+        raise Exception('Wrapped key payload is too short')
+
+    nonce = payload[:12]
+    ciphertext = payload[12:-16]
+    tag = payload[-16:]
+
+    try:
+        return AESGCM(master_key).decrypt(nonce, ciphertext + tag, b'engui:wrapped-key:v1')
+    except Exception as error:
+        raise Exception(f'Failed to unwrap DEK: {error}')
+
+
+def decrypt_structured_envelope(envelope):
+    key = decode_encryption_key()
+    if not key:
+        raise Exception('Secure payload received but FIELD_ENC_KEY_B64 is missing')
+
+    binding = envelope.get('binding')
+    wrapped_key = envelope.get('wrapped_key')
+    nonce_b64 = envelope.get('nonce')
+    ciphertext_b64 = envelope.get('ciphertext')
+
+    if not binding or not wrapped_key or not nonce_b64 or not ciphertext_b64:
+        raise Exception('Structured secure payload is missing required fields')
+
+    dek = unwrap_dek(key, wrapped_key)
+
+    try:
+        nonce = base64.b64decode(nonce_b64)
+        ciphertext = base64.b64decode(ciphertext_b64)
+    except Exception as error:
+        raise Exception(f'Failed to decode structured secure payload: {error}')
+
+    try:
+        plaintext = AESGCM(dek).decrypt(nonce, ciphertext, serialize_binding(binding))
+        return json.loads(plaintext.decode('utf-8'))
+    except Exception as error:
+        raise Exception(f'Failed to decrypt structured secure payload: {error}')
+
+
+def encrypt_result_to_transport(plaintext_bytes, job_id, model_id, attempt_id, output_path, kind='image', mime='image/png'):
+    master_key = decode_encryption_key()
+    if not master_key:
+        raise Exception('FIELD_ENC_KEY_B64 is required to encrypt transport result')
+
+    dek = os.urandom(32)
+    binding = {
+        'job_id': job_id,
+        'model_id': model_id,
+        'attempt_id': attempt_id,
+        'direction': 'endpoint_to_engui',
+        'role': 'result',
+        'kind': kind,
+    }
+
+    nonce = os.urandom(12)
+    ciphertext_with_tag = AESGCM(dek).encrypt(nonce, plaintext_bytes, serialize_binding(binding))
+
+    wrap_nonce = os.urandom(12)
+    wrapped_key_payload = AESGCM(master_key).encrypt(wrap_nonce, dek, b'engui:wrapped-key:v1')
+    wrapped_key = WRAPPED_KEY_PREFIX + base64.b64encode(wrap_nonce + wrapped_key_payload).decode('utf-8')
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'wb') as output_file:
+        output_file.write(ciphertext_with_tag)
+
+    return {
+        'status': 'completed',
+        'result_media': {
+            'kind': kind,
+            'mime': mime,
+            'storage_path': output_path,
+            'envelope': {
+                'v': 1,
+                'wrapped_key': wrapped_key,
+                'nonce': base64.b64encode(nonce).decode('utf-8'),
+                'binding': binding,
+            },
+        },
+    }
+
+
+def normalize_transport_failure(code, message):
+    return {
+        'status': 'failed',
+        'error': {
+            'code': code,
+            'message': message,
+        },
+    }
+
+
+def get_transport_request(job_input):
+    transport_request = job_input.get('transport_request') or {}
+    output_dir = transport_request.get('output_dir')
+    if not output_dir or not isinstance(output_dir, str):
+        return None
+    output_dir = output_dir.rstrip('/')
+    if not output_dir.startswith('/runpod-volume/'):
+        raise Exception('transport_request.output_dir must be under /runpod-volume/')
+    return {
+        'output_dir': output_dir,
+    }
+
+
+def decrypt_media_input_to_file(descriptor, output_file_path):
+    key = decode_encryption_key()
+    if not key:
+        raise Exception('Secure media input received but FIELD_ENC_KEY_B64 is missing')
+
+    storage_path = descriptor.get('storage_path')
+    envelope = descriptor.get('envelope') or {}
+    binding = envelope.get('binding')
+    wrapped_key = envelope.get('wrapped_key')
+    nonce_b64 = envelope.get('nonce')
+
+    if not storage_path or not binding or not wrapped_key or not nonce_b64:
+        raise Exception('Secure media input descriptor is incomplete')
+
+    with open(storage_path, 'rb') as input_file:
+        ciphertext_with_tag = input_file.read()
+
+    dek = unwrap_dek(key, wrapped_key)
+    try:
+        nonce = base64.b64decode(nonce_b64)
+    except Exception as error:
+        raise Exception(f'Failed to decode secure media nonce: {error}')
+
+    try:
+        plaintext = AESGCM(dek).decrypt(nonce, ciphertext_with_tag, serialize_binding(binding))
+    except Exception as error:
+        raise Exception(f'Failed to decrypt secure media input: {error}')
+
+    os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
+    with open(output_file_path, 'wb') as output_file:
+        output_file.write(plaintext)
+
+    return output_file_path
+
+
+def get_secure_media_input(job_input, roles):
+    media_inputs = job_input.get('media_inputs') or []
+    for descriptor in media_inputs:
+        if descriptor.get('role') in roles:
+            return descriptor
+    return None
+
+
 def encrypt_output_image(image_data_base64):
     """Encrypt image bytes for response payload using FIELD_ENC_KEY_B64."""
     key = decode_encryption_key()
@@ -96,25 +261,41 @@ def decrypt_secure_input(job_input):
     if not secure:
         return job_input
 
-    key = decode_encryption_key()
-    if not key:
-        raise Exception("Secure payload received but FIELD_ENC_KEY_B64 is missing")
+    if secure.get('binding'):
+        job_input['__secure_binding'] = secure.get('binding')
 
-    try:
-        nonce = base64.b64decode(secure['nonce'])
-        ciphertext = base64.b64decode(secure['ciphertext'])
-        aad = b'engui:zimage:v1'
-        plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
-        payload = json.loads(plaintext.decode('utf-8'))
-    except Exception as error:
-        raise Exception(f"Failed to decrypt secure payload: {error}")
+    if secure.get('wrapped_key') and secure.get('binding'):
+        payload = decrypt_structured_envelope(secure)
+    else:
+        key = decode_encryption_key()
+        if not key:
+            raise Exception("Secure payload received but FIELD_ENC_KEY_B64 is missing")
+
+        try:
+            nonce = base64.b64decode(secure['nonce'])
+            ciphertext = base64.b64decode(secure['ciphertext'])
+            aad = b'engui:zimage:v1'
+            plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+            payload = json.loads(plaintext.decode('utf-8'))
+        except Exception as error:
+            raise Exception(f"Failed to decrypt secure payload: {error}")
 
     if 'prompt' in payload:
         job_input['prompt'] = payload.get('prompt', '')
 
+    if 'positive_prompt' in payload and not job_input.get('prompt'):
+        job_input['prompt'] = payload.get('positive_prompt', '')
+
     if 'negative_prompt' in payload:
         job_input['negative_prompt'] = payload.get('negative_prompt', '')
         job_input['negativePrompt'] = payload.get('negative_prompt', '')
+
+    if 'negativePrompt' in payload:
+        job_input['negative_prompt'] = payload.get('negativePrompt', '')
+        job_input['negativePrompt'] = payload.get('negativePrompt', '')
+
+    if 'lora' in payload and isinstance(payload.get('lora'), list):
+        job_input['lora'] = payload.get('lora')
 
     if 'lora_names' in payload:
         names = payload.get('lora_names') or []
@@ -461,9 +642,18 @@ def handler(job):
 
     try:
 
+            transport_request = get_transport_request(job_input)
+            secure_condition_image = get_secure_media_input(job_input, ['condition_image', 'source_image'])
+
             # condition 이미지 입력 처리 (condition_image, condition_image_path, condition_image_url, condition_image_base64 중 하나만 사용)
             condition_image_path = None
-            if "condition_image" in job_input:
+            if secure_condition_image:
+                condition_image_path = decrypt_media_input_to_file(
+                    secure_condition_image,
+                    os.path.abspath(os.path.join(task_id, 'condition_image.bin'))
+                )
+                logger.info('Using secure media_inputs condition image')
+            elif "condition_image" in job_input:
                 # condition_image 파라미터가 제공된 경우, 자동으로 타입 감지
                 condition_image_data = job_input["condition_image"]
                 if isinstance(condition_image_data, str):
@@ -631,6 +821,52 @@ def handler(job):
             for node_id in images:
                 if images[node_id]:
                     image_data = images[node_id][0]
+
+                    if transport_request:
+                        try:
+                            job_id = None
+                            if isinstance(job.get('id'), str) and job.get('id'):
+                                job_id = job.get('id')
+                            elif isinstance(job.get('id'), dict):
+                                job_id = job.get('id').get('id') or job.get('id').get('jobId')
+                            if not job_id:
+                                job_id = job_input.get('job_id') or job_input.get('jobId') or 'unknown-job'
+
+                            secure_binding = job_input.get('__secure_binding', {}) or {}
+                            attempt_id = secure_binding.get('attempt_id') or job_input.get('attempt_id') or 'unknown-attempt'
+                            model_id = secure_binding.get('model_id') or job_input.get('model_id') or 'z-image'
+                            output_path = os.path.join(transport_request['output_dir'], 'result.bin')
+
+                            image_bytes = base64.b64decode(image_data)
+                            transport_result = encrypt_result_to_transport(
+                                image_bytes,
+                                job_id,
+                                model_id,
+                                attempt_id,
+                                output_path,
+                                'image',
+                                'image/png'
+                            )
+
+                            response_payload = {
+                                'transport_result': transport_result,
+                            }
+
+                            if job_input.get("return_url", False):
+                                file_name = f"{task_id}.png"
+                                image_url = upload_to_r2(image_data, file_name)
+                                if image_url:
+                                    response_payload["image_url"] = image_url
+
+                            return response_payload
+                        except Exception as transport_error:
+                            logger.error(f'Transport result finalization failed in endpoint: {transport_error}')
+                            return {
+                                'transport_result': normalize_transport_failure(
+                                    'TRANSPORT_RESULT_WRITE_FAILED',
+                                    str(transport_error)
+                                )
+                            }
 
                     encrypted_image = encrypt_output_image(image_data)
                     response_payload = {"image_encrypted": encrypted_image}
