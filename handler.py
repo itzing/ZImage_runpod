@@ -241,6 +241,14 @@ def get_mock_failure_mode():
     return (os.getenv('ZIMAGE_MOCK_FAILURE') or '').strip().lower()
 
 
+def build_secure_result_filename(job_id, attempt_id, extension='bin'):
+    safe_job_id = re.sub(r'[^a-zA-Z0-9._-]', '_', str(job_id or 'unknown-job'))
+    safe_attempt_id = re.sub(r'[^a-zA-Z0-9._-]', '_', str(attempt_id or 'unknown-attempt'))
+    safe_extension = re.sub(r'[^a-zA-Z0-9]', '', str(extension or 'bin')) or 'bin'
+    return f'{safe_job_id}__{safe_attempt_id}__result.{safe_extension}'
+
+
+
 def build_mock_secure_response(job, job_input, transport_request, task_id):
     failure_mode = get_mock_failure_mode()
     if failure_mode in ('transport', 'result'):
@@ -278,7 +286,7 @@ def build_mock_secure_response(job, job_input, transport_request, task_id):
 
     attempt_id = secure_binding.get('attempt_id') or job_input.get('attempt_id') or 'unknown-attempt'
     model_id = secure_binding.get('model_id') or job_input.get('model_id') or 'z-image'
-    output_path = os.path.join(transport_request['output_dir'], 'result.bin')
+    output_path = os.path.join(transport_request['output_dir'], build_secure_result_filename(job_id, attempt_id))
 
     image_bytes = base64.b64decode(MOCK_RESULT_IMAGE_BASE64)
     transport_result = encrypt_result_to_transport(
@@ -923,7 +931,10 @@ def handler(job):
 
                             attempt_id = secure_binding.get('attempt_id') or job_input.get('attempt_id') or 'unknown-attempt'
                             model_id = secure_binding.get('model_id') or job_input.get('model_id') or 'z-image'
-                            output_path = os.path.join(transport_request['output_dir'], 'result.bin')
+                            output_path = os.path.join(
+                                transport_request['output_dir'],
+                                build_secure_result_filename(job_id, attempt_id)
+                            )
 
                             image_bytes = base64.b64decode(image_data)
                             transport_result = encrypt_result_to_transport(
