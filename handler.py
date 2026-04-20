@@ -616,6 +616,64 @@ def load_workflow(workflow_path):
     with open(workflow_path, 'r', encoding='utf-8') as file:
         return json.load(file)
 
+
+def normalize_lora_entries(job_input, max_loras=4):
+    raw_lora_list = job_input.get('lora', []) if isinstance(job_input.get('lora'), list) else []
+    normalized = []
+
+    for index, entry in enumerate(raw_lora_list):
+        if index >= max_loras:
+            logger.info(f'Truncating LoRA list to first {max_loras} entries')
+            break
+
+        if not isinstance(entry, list) or len(entry) < 2:
+            raise Exception('LoRA format is invalid. Each entry must be [filename, strength].')
+
+        lora_name = str(entry[0]).strip()
+        if not lora_name:
+            raise Exception('LoRA filename must be a non-empty string.')
+
+        try:
+            strength = float(entry[1])
+        except (TypeError, ValueError):
+            raise Exception(f'LoRA strength for {lora_name} must be numeric.')
+
+        normalized.append([lora_name, strength])
+
+    return normalized
+
+
+def apply_dynamic_loras_to_workflow(prompt, lora_entries):
+    if not lora_entries:
+        return prompt
+
+    if '59:11' not in prompt or '59:28' not in prompt:
+        raise Exception('LoRA workflow is missing expected model nodes.')
+
+    prompt.pop('59:35', None)
+
+    previous_model_binding = ['59:28', 0]
+    base_node_id = 3500
+
+    for index, (lora_name, strength) in enumerate(lora_entries):
+        node_id = str(base_node_id + index)
+        prompt[node_id] = {
+            'inputs': {
+                'lora_name': lora_name,
+                'strength_model': strength,
+                'model': previous_model_binding,
+            },
+            'class_type': 'LoraLoaderModelOnly',
+            '_meta': {
+                'title': f'LoRA Loader {index + 1}'
+            }
+        }
+        previous_model_binding = [node_id, 0]
+
+    prompt['59:11']['inputs']['model'] = previous_model_binding
+    return prompt
+
+
 def cleanup_runtime_artifacts(task_id):
     """Cleanup endpoint-local artifacts after each task."""
     paths_to_clean = [
@@ -774,9 +832,9 @@ def handler(job):
                 return build_mock_secure_response(job, job_input, transport_request, task_id)
 
             # LoRA 확인
-            lora_list = job_input.get("lora", [])
-            has_lora = lora_list and len(lora_list) > 0
-    
+            lora_list = normalize_lora_entries(job_input)
+            has_lora = len(lora_list) > 0
+
             # 워크플로우 파일 선택 (우선순위: condition_image > lora > 기본)
             if condition_image_path:
                 workflow_file = "workflow/z_image_control.json"
@@ -837,29 +895,19 @@ def handler(job):
                 # z_image_lora.json 워크플로우 설정
                 # 노드 58: PrimitiveStringMultiline (프롬프트)
                 prompt["58"]["inputs"]["value"] = prompt_text
-        
+
                 # 노드 59:13: EmptySD3LatentImage (width, height)
                 prompt["59:13"]["inputs"]["width"] = adjusted_width
                 prompt["59:13"]["inputs"]["height"] = adjusted_height
-        
+
                 # 노드 59:3: KSampler (seed, steps, cfg)
                 prompt["59:3"]["inputs"]["seed"] = seed
                 prompt["59:3"]["inputs"]["steps"] = steps
                 prompt["59:3"]["inputs"]["cfg"] = cfg
-        
-                # 노드 59:35: LoraLoaderModelOnly (lora_name, strength_model)
-                # 첫 번째 LoRA만 사용 (나중에 여러 개 지원 가능)
-                first_lora = lora_list[0]
-                if isinstance(first_lora, list) and len(first_lora) >= 2:
-                    lora_path = first_lora[0]
-                    lora_strength = first_lora[1]
-                else:
-                    raise Exception("LoRA 형식이 올바르지 않습니다. [파일경로, strength] 형태여야 합니다.")
-        
-                prompt["59:35"]["inputs"]["lora_name"] = lora_path
-                prompt["59:35"]["inputs"]["strength_model"] = lora_strength
-        
-                logger.info("LoRA workflow 설정 완료: lora=..., strength=..., prompt=...")
+
+                prompt = apply_dynamic_loras_to_workflow(prompt, lora_list)
+
+                logger.info(f"LoRA workflow configured with {len(lora_list)} LoRA node(s)")
             else:
                 # z_image.json 워크플로우 설정
                 # 노드 45: CLIPTextEncode (프롬프트)
