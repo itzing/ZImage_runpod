@@ -617,15 +617,11 @@ def load_workflow(workflow_path):
         return json.load(file)
 
 
-def normalize_lora_entries(job_input, max_loras=4):
+def normalize_lora_entries(job_input):
     raw_lora_list = job_input.get('lora', []) if isinstance(job_input.get('lora'), list) else []
     normalized = []
 
-    for index, entry in enumerate(raw_lora_list):
-        if index >= max_loras:
-            logger.info(f'Truncating LoRA list to first {max_loras} entries')
-            break
-
+    for entry in raw_lora_list:
         if not isinstance(entry, list) or len(entry) < 2:
             raise Exception('LoRA format is invalid. Each entry must be [filename, strength].')
 
