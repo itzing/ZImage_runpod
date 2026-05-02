@@ -27,8 +27,8 @@ This InfiniteTalk template is primarily designed for **Engui Studio**, a compreh
 ## ✨ Key Features
 
 *   **Text-to-Image Generation**: Creates high-quality images from text descriptions with advanced Flux architecture.
-*   **Multi-LoRA Support**: Supports up to 3 LoRA models simultaneously for enhanced customization.
-*   **Dynamic Model Loading**: Automatically selects appropriate workflow based on LoRA count (0-3 LoRAs).
+*   **Multi-LoRA Support**: Supports multiple LoRA models simultaneously for enhanced customization.
+*   **Dynamic Model Loading**: Automatically selects the LoRA workflow when LoRA inputs are present.
 *   **Customizable Parameters**: Control image generation with various parameters including seed, guidance, width, height, and prompts.
 *   **ComfyUI Integration**: Built on top of ComfyUI for flexible workflow management.
 *   **Dual CLIP Support**: Enhanced text understanding with dual CLIP model integration.
@@ -60,8 +60,8 @@ The `input` object must contain the following fields. All parameters except `mod
 - Each LoRA entry should be an array with two elements: `[model_name, weight]`
 - `model_name`: Full path to the LoRA model file (e.g., `"/my_volume/loras/lora.safetensors"`)
 - `weight`: Strength/weight of the LoRA (typically between 0.0 and 2.0)
-- Maximum 3 LoRAs supported
-- If more than 3 LoRAs are provided, only the first 3 will be used
+- Multiple LoRA entries are supported
+- Each provided LoRA entry is applied in order
 - **Note**: Custom models and LoRAs require Network Volumes to be configured
 
 **Request Examples:**
