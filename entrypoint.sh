@@ -6,7 +6,8 @@ set -e
 # Start ComfyUI in the background (RAM mode)
 echo "Starting ComfyUI in RAM mode..."
 RUNTIME_ROOT=${RUNTIME_ROOT:-/dev/shm/comfy-runtime}
-mkdir -p "$RUNTIME_ROOT/input" "$RUNTIME_ROOT/output" "$RUNTIME_ROOT/temp" "$RUNTIME_ROOT/user"
+mkdir -p "$RUNTIME_ROOT/input" "$RUNTIME_ROOT/output" "$RUNTIME_ROOT/temp" "$RUNTIME_ROOT/user/default/ComfyUI-Manager"
+cp /ComfyUI/user/default/ComfyUI-Manager/config.ini "$RUNTIME_ROOT/user/default/ComfyUI-Manager/config.ini"
 python /ComfyUI/main.py --listen --use-sage-attention \
   --input-directory "$RUNTIME_ROOT/input" \
   --output-directory "$RUNTIME_ROOT/output" \
