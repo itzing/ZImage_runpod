@@ -23,7 +23,7 @@
     },
     "class_type": "DWPreprocessor",
     "_meta": {
-      "title": "Extract OpenPose/DWPose map + keypoints"
+      "title": "Extract OpenPose/DWPose map"
     }
   },
   "3": {
@@ -49,19 +49,6 @@
     "class_type": "PreviewImage",
     "_meta": {
       "title": "Preview OpenPose PNG"
-    }
-  },
-  "5": {
-    "inputs": {
-      "filename_prefix": "openpose-keypoints",
-      "pose_kps": [
-        "2",
-        1
-      ]
-    },
-    "class_type": "SavePoseKpsAsJson",
-    "_meta": {
-      "title": "Save POSE_KEYPOINT JSON"
     }
   }
 }

@@ -1111,10 +1111,6 @@ def handler(job):
             images, artifacts, prompt_id = get_outputs(ws, prompt)
             ws.close()
 
-            pose_keypoint_artifact = None
-            if is_openpose_extract:
-                pose_keypoint_artifact = find_pose_keypoint_json(task_id)
-
             # 이미지가 없는 경우 처리
             if not images:
                 return {"error": "이미지를 생성할 수 없습니다.", "artifacts": artifacts}
@@ -1163,7 +1159,6 @@ def handler(job):
 
                             if is_openpose_extract:
                                 response_payload['task'] = 'openpose_extract'
-                                response_payload['pose_keypoint_encrypted'] = encrypt_pose_keypoint_artifact(pose_keypoint_artifact)
                                 response_payload['artifacts'] = artifacts
 
                             if job_input.get("return_url", False):
@@ -1187,7 +1182,6 @@ def handler(job):
 
                     if is_openpose_extract:
                         response_payload['task'] = 'openpose_extract'
-                        response_payload['pose_keypoint_encrypted'] = encrypt_pose_keypoint_artifact(pose_keypoint_artifact)
                         response_payload['artifacts'] = artifacts
 
                     if job_input.get("return_url", False):
