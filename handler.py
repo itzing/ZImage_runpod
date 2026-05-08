@@ -327,20 +327,14 @@ def build_mock_secure_response(job, job_input, transport_request, task_id):
     return response_payload
 
 
-def encrypt_output_image(image_data_base64):
-    """Encrypt image bytes for response payload using FIELD_ENC_KEY_B64."""
+def encrypt_output_bytes(plaintext_bytes, mime, aad=b'engui:zimage:result:v1'):
+    """Encrypt response payload bytes using FIELD_ENC_KEY_B64."""
     key = decode_encryption_key()
     if not key:
-        raise Exception("FIELD_ENC_KEY_B64 is required to encrypt image output")
-
-    try:
-        image_bytes = base64.b64decode(image_data_base64)
-    except Exception as error:
-        raise Exception(f"Failed to decode image bytes for encryption: {error}")
+        raise Exception("FIELD_ENC_KEY_B64 is required to encrypt output")
 
     nonce = os.urandom(12)
-    aad = b'engui:zimage:result:v1'
-    ciphertext = AESGCM(key).encrypt(nonce, image_bytes, aad)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext_bytes, aad)
 
     return {
         'v': 1,
@@ -348,8 +342,27 @@ def encrypt_output_image(image_data_base64):
         'kid': os.getenv('ZIMAGE_FIELD_ENC_KID', 'zimage-k1'),
         'nonce': base64.b64encode(nonce).decode('utf-8'),
         'ciphertext': base64.b64encode(ciphertext).decode('utf-8'),
-        'mime': 'image/png',
+        'mime': mime,
     }
+
+
+def encrypt_output_image(image_data_base64):
+    """Encrypt image bytes for response payload using FIELD_ENC_KEY_B64."""
+    try:
+        image_bytes = base64.b64decode(image_data_base64)
+    except Exception as error:
+        raise Exception(f"Failed to decode image bytes for encryption: {error}")
+
+    return encrypt_output_bytes(image_bytes, 'image/png')
+
+
+def encrypt_pose_keypoint_artifact(pose_keypoint_artifact):
+    if not pose_keypoint_artifact:
+        return None
+    payload = json.dumps(pose_keypoint_artifact.get('json'), separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+    encrypted = encrypt_output_bytes(payload, 'application/json', b'engui:zimage:pose-keypoint:v1')
+    encrypted['filename'] = pose_keypoint_artifact.get('filename')
+    return encrypted
 
 
 def decrypt_secure_input(job_input):
@@ -416,6 +429,14 @@ def decrypt_secure_input(job_input):
     job_input.pop('_secure', None)
 
     return job_input
+
+
+def parse_bool_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on', 'enable', 'enabled')
+    return bool(value)
 
 
 def to_nearest_multiple_of_16(value):
@@ -577,9 +598,19 @@ def get_history(prompt_id):
     with urllib.request.urlopen(url) as response:
         return json.loads(response.read())
 
-def get_images(ws, prompt):
+def get_comfy_file(filename, subfolder, folder_type):
+    url = f"http://{server_address}:8188/view"
+    logger.info(f"Getting file from: {url}")
+    data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
+    url_values = urllib.parse.urlencode(data)
+    with urllib.request.urlopen(f"{url}?{url_values}") as response:
+        return response.read()
+
+
+def get_outputs(ws, prompt):
     prompt_id = queue_prompt(prompt)['prompt_id']
     output_images = {}
+    output_artifacts = {}
     while True:
         out = ws.recv()
         if isinstance(out, str):
@@ -595,6 +626,7 @@ def get_images(ws, prompt):
     for node_id in history['outputs']:
         node_output = history['outputs'][node_id]
         images_output = []
+        artifacts_output = {}
         if 'images' in node_output:
             for image in node_output['images']:
                 image_data = get_image(image['filename'], image['subfolder'], image['type'])
@@ -603,8 +635,19 @@ def get_images(ws, prompt):
                     import base64
                     image_data = base64.b64encode(image_data).decode('utf-8')
                 images_output.append(image_data)
+        for output_key, output_value in node_output.items():
+            if output_key == 'images':
+                continue
+            artifacts_output[output_key] = output_value
         output_images[node_id] = images_output
+        if artifacts_output:
+            output_artifacts[node_id] = artifacts_output
 
+    return output_images, output_artifacts, prompt_id
+
+
+def get_images(ws, prompt):
+    output_images, _output_artifacts, prompt_id = get_outputs(ws, prompt)
     return output_images, prompt_id
 
 def load_workflow(workflow_path):
@@ -615,6 +658,40 @@ def load_workflow(workflow_path):
         workflow_path = os.path.join(current_dir, workflow_path)
     with open(workflow_path, 'r', encoding='utf-8') as file:
         return json.load(file)
+
+
+def find_pose_keypoint_json(task_id=None):
+    runtime_root = os.getenv('RUNTIME_ROOT', '/dev/shm/comfy-runtime')
+    candidate_dirs = [
+        os.path.join(runtime_root, 'output'),
+        '/ComfyUI/output',
+    ]
+    if task_id:
+        candidate_dirs.insert(0, os.path.abspath(task_id))
+
+    candidates = []
+    for directory in candidate_dirs:
+        if not os.path.isdir(directory):
+            continue
+        for root, _dirs, files in os.walk(directory):
+            for file_name in files:
+                lower = file_name.lower()
+                if lower.endswith('.json') and ('pose' in lower or 'keypoint' in lower or 'kps' in lower):
+                    path = os.path.join(root, file_name)
+                    try:
+                        candidates.append((os.path.getmtime(path), path))
+                    except OSError:
+                        pass
+
+    if not candidates:
+        return None
+
+    _mtime, path = sorted(candidates, reverse=True)[0]
+    with open(path, 'r', encoding='utf-8') as file:
+        return {
+            'filename': os.path.basename(path),
+            'json': json.load(file),
+        }
 
 
 def normalize_lora_entries(job_input):
@@ -639,17 +716,17 @@ def normalize_lora_entries(job_input):
     return normalized
 
 
-def apply_dynamic_loras_to_workflow(prompt, lora_entries):
+def apply_dynamic_loras_to_model_chain(prompt, lora_entries, model_loader_node_id, consumer_node_id, consumer_input='model', base_node_id=3500, placeholder_node_ids=None):
     if not lora_entries:
         return prompt
 
-    if '59:11' not in prompt or '59:28' not in prompt:
+    if model_loader_node_id not in prompt or consumer_node_id not in prompt:
         raise Exception('LoRA workflow is missing expected model nodes.')
 
-    prompt.pop('59:35', None)
+    for node_id in placeholder_node_ids or []:
+        prompt.pop(node_id, None)
 
-    previous_model_binding = ['59:28', 0]
-    base_node_id = 3500
+    previous_model_binding = [model_loader_node_id, 0]
 
     for index, (lora_name, strength) in enumerate(lora_entries):
         node_id = str(base_node_id + index)
@@ -666,8 +743,31 @@ def apply_dynamic_loras_to_workflow(prompt, lora_entries):
         }
         previous_model_binding = [node_id, 0]
 
-    prompt['59:11']['inputs']['model'] = previous_model_binding
+    prompt[consumer_node_id]['inputs'][consumer_input] = previous_model_binding
     return prompt
+
+
+def apply_dynamic_loras_to_workflow(prompt, lora_entries):
+    return apply_dynamic_loras_to_model_chain(
+        prompt,
+        lora_entries,
+        model_loader_node_id='59:28',
+        consumer_node_id='59:11',
+        consumer_input='model',
+        base_node_id=3500,
+        placeholder_node_ids=['59:35'],
+    )
+
+
+def apply_dynamic_loras_to_control_workflow(prompt, lora_entries):
+    return apply_dynamic_loras_to_model_chain(
+        prompt,
+        lora_entries,
+        model_loader_node_id='70:46',
+        consumer_node_id='70:60',
+        consumer_input='model',
+        base_node_id=4500,
+    )
 
 
 def cleanup_runtime_artifacts(task_id):
@@ -793,9 +893,11 @@ def handler(job):
     try:
 
             transport_request = get_transport_request(job_input)
-            secure_condition_image = get_secure_media_input(job_input, ['condition_image', 'source_image'])
+            task_mode = str(job_input.get('task') or job_input.get('mode') or '').strip().lower()
+            is_openpose_extract = task_mode in ('openpose_extract', 'pose_extract', 'extract_openpose', 'extract_pose')
+            secure_condition_image = get_secure_media_input(job_input, ['condition_image', 'source_image', 'image'])
 
-            # condition 이미지 입력 처리 (condition_image, condition_image_path, condition_image_url, condition_image_base64 중 하나만 사용)
+            # condition/source 이미지 입력 처리 (condition_image/source_image/image variants 중 하나 사용)
             condition_image_path = None
             if secure_condition_image:
                 condition_image_path = decrypt_media_input_to_file(
@@ -822,6 +924,37 @@ def handler(job):
                 condition_image_path = process_input(job_input["condition_image_url"], task_id, "condition_image.jpg", "url")
             elif "condition_image_base64" in job_input:
                 condition_image_path = process_input(job_input["condition_image_base64"], task_id, "condition_image.jpg", "base64")
+            elif "source_image" in job_input:
+                source_image_data = job_input["source_image"]
+                if isinstance(source_image_data, str):
+                    if source_image_data.startswith("http://") or source_image_data.startswith("https://"):
+                        condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "url")
+                    elif os.path.exists(source_image_data) or source_image_data.startswith("/"):
+                        condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "path")
+                    else:
+                        condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "base64")
+                else:
+                    raise Exception("source_image must be a string.")
+            elif "image" in job_input and is_openpose_extract:
+                image_data = job_input["image"]
+                if isinstance(image_data, str):
+                    if image_data.startswith("http://") or image_data.startswith("https://"):
+                        condition_image_path = process_input(image_data, task_id, "source_image.jpg", "url")
+                    elif os.path.exists(image_data) or image_data.startswith("/"):
+                        condition_image_path = process_input(image_data, task_id, "source_image.jpg", "path")
+                    else:
+                        condition_image_path = process_input(image_data, task_id, "source_image.jpg", "base64")
+                else:
+                    raise Exception("image must be a string for openpose extraction.")
+            elif "source_image_path" in job_input:
+                condition_image_path = process_input(job_input["source_image_path"], task_id, "source_image.jpg", "path")
+            elif "source_image_url" in job_input:
+                condition_image_path = process_input(job_input["source_image_url"], task_id, "source_image.jpg", "url")
+            elif "source_image_base64" in job_input:
+                condition_image_path = process_input(job_input["source_image_base64"], task_id, "source_image.jpg", "base64")
+
+            if is_openpose_extract and not condition_image_path:
+                raise Exception("openpose_extract requires source_image, image, condition_image, or a *_path/url/base64 variant.")
 
             if is_mock_secure_flow_enabled():
                 logger.info('Mock secure flow is enabled, skipping ComfyUI execution and returning synthetic transport result')
@@ -831,8 +964,11 @@ def handler(job):
             lora_list = normalize_lora_entries(job_input)
             has_lora = len(lora_list) > 0
 
-            # 워크플로우 파일 선택 (우선순위: condition_image > lora > 기본)
-            if condition_image_path:
+            # 워크플로우 파일 선택 (우선순위: openpose_extract > condition_image > lora > 기본)
+            if is_openpose_extract:
+                workflow_file = "workflow/openpose_extract.json"
+                logger.info(f"Using OpenPose extract workflow: {workflow_file}")
+            elif condition_image_path:
                 workflow_file = "workflow/z_image_control.json"
                 logger.info(f"Using control workflow: {workflow_file}")
             elif has_lora:
@@ -861,7 +997,23 @@ def handler(job):
             if adjusted_height != height:
                 logger.info(f"Height adjusted to nearest multiple of 16: {height} -> {adjusted_height}")
 
-            if condition_image_path:
+            if is_openpose_extract:
+                # openpose_extract.json 워크플로우 설정
+                # 노드 1: LoadImage (source photo)
+                prompt["1"]["inputs"]["image"] = condition_image_path
+
+                openpose_resolution = job_input.get("openpose_resolution", job_input.get("openposeResolution", 1024))
+                prompt["2"]["inputs"]["resolution"] = int(openpose_resolution)
+
+                if "detect_hand" in job_input:
+                    prompt["2"]["inputs"]["detect_hand"] = "enable" if parse_bool_flag(job_input["detect_hand"]) else "disable"
+                if "detect_face" in job_input:
+                    prompt["2"]["inputs"]["detect_face"] = "enable" if parse_bool_flag(job_input["detect_face"]) else "disable"
+                if "detect_body" in job_input:
+                    prompt["2"]["inputs"]["detect_body"] = "enable" if parse_bool_flag(job_input["detect_body"]) else "disable"
+
+                logger.info("OpenPose extraction workflow configured: source_image=...")
+            elif condition_image_path:
                 # z_image_control.json 워크플로우 설정
                 # 노드 58: LoadImage (condition 이미지)
                 prompt["58"]["inputs"]["image"] = condition_image_path
@@ -874,19 +1026,21 @@ def handler(job):
                 prompt["70:44"]["inputs"]["steps"] = steps
                 prompt["70:44"]["inputs"]["cfg"] = cfg
         
-                # 노드 57: Canny (low_threshold, high_threshold) - 선택적
-                if "canny_low_threshold" in job_input:
-                    prompt["57"]["inputs"]["low_threshold"] = job_input["canny_low_threshold"]
-                if "canny_high_threshold" in job_input:
-                    prompt["57"]["inputs"]["high_threshold"] = job_input["canny_high_threshold"]
+                # OpenPose/control maps are passed directly to the ControlNet node.
+                # Do not run Canny here: pose maps encode body layout in their own colors/lines.
         
                 # 노드 70:60: QwenImageDiffsynthControlnet (strength) - 선택적
-                if "controlnet_strength" in job_input:
-                    prompt["70:60"]["inputs"]["strength"] = job_input["controlnet_strength"]
+                controlnet_strength = job_input.get("controlnet_strength", job_input.get("controlnetStrength"))
+                if controlnet_strength is not None:
+                    prompt["70:60"]["inputs"]["strength"] = float(controlnet_strength)
+
+                if has_lora:
+                    prompt = apply_dynamic_loras_to_control_workflow(prompt, lora_list)
+                    logger.info(f"Control workflow configured with {len(lora_list)} LoRA node(s)")
         
-                # 노드 70:41: EmptySD3LatentImage는 70:69에서 자동으로 크기를 가져오므로 설정 불필요
+                # 노드 70:41: EmptySD3LatentImage는 70:69에서 control image 크기를 가져오므로 설정 불필요
         
-                logger.info("Control workflow 설정 완료: condition_image=..., prompt=...")
+                logger.info("OpenPose/control workflow configured: condition_image=..., prompt=...")
             elif has_lora:
                 # z_image_lora.json 워크플로우 설정
                 # 노드 58: PrimitiveStringMultiline (프롬프트)
@@ -954,12 +1108,16 @@ def handler(job):
                     if attempt == max_attempts - 1:
                         raise Exception("웹소켓 연결 시간 초과 (3분)")
                     time.sleep(5)
-            images, prompt_id = get_images(ws, prompt)
+            images, artifacts, prompt_id = get_outputs(ws, prompt)
             ws.close()
+
+            pose_keypoint_artifact = None
+            if is_openpose_extract:
+                pose_keypoint_artifact = find_pose_keypoint_json(task_id)
 
             # 이미지가 없는 경우 처리
             if not images:
-                return {"error": "이미지를 생성할 수 없습니다."}
+                return {"error": "이미지를 생성할 수 없습니다.", "artifacts": artifacts}
     
             # 첫 번째 이미지 반환
             for node_id in images:
@@ -1003,6 +1161,11 @@ def handler(job):
                                 'transport_result': transport_result,
                             }
 
+                            if is_openpose_extract:
+                                response_payload['task'] = 'openpose_extract'
+                                response_payload['pose_keypoint_encrypted'] = encrypt_pose_keypoint_artifact(pose_keypoint_artifact)
+                                response_payload['artifacts'] = artifacts
+
                             if job_input.get("return_url", False):
                                 file_name = f"{task_id}.png"
                                 image_url = upload_to_r2(image_data, file_name)
@@ -1021,6 +1184,11 @@ def handler(job):
 
                     encrypted_image = encrypt_output_image(image_data)
                     response_payload = {"image_encrypted": encrypted_image}
+
+                    if is_openpose_extract:
+                        response_payload['task'] = 'openpose_extract'
+                        response_payload['pose_keypoint_encrypted'] = encrypt_pose_keypoint_artifact(pose_keypoint_artifact)
+                        response_payload['artifacts'] = artifacts
 
                     if job_input.get("return_url", False):
                         # Optional R2 upload

@@ -19,6 +19,11 @@ RUN cd /ComfyUI/custom_nodes && \
     cd ComfyUI-Manager && \
     pip install -r requirements.txt
 
+RUN cd /ComfyUI/custom_nodes && \
+    git clone https://github.com/Fannovel16/comfyui_controlnet_aux.git && \
+    cd comfyui_controlnet_aux && \
+    pip install -r requirements.txt
+
 # wget을 사용하여 모델 다운로드 (인증 불필요)
 RUN wget https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors -O /ComfyUI/models/unet/z_image_turbo_bf16.safetensors
 RUN wget https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors -O /ComfyUI/models/clip/qwen_3_4b.safetensors

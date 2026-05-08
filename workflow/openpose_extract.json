@@ -1,0 +1,67 @@
+{
+  "1": {
+    "inputs": {
+      "image": "openpose_source.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load source photo"
+    }
+  },
+  "2": {
+    "inputs": {
+      "detect_hand": "enable",
+      "detect_body": "enable",
+      "detect_face": "enable",
+      "resolution": 1024,
+      "bbox_detector": "yolox_l.onnx",
+      "pose_estimator": "dw-ll_ucoco_384.onnx",
+      "image": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "DWPreprocessor",
+    "_meta": {
+      "title": "Extract OpenPose/DWPose map + keypoints"
+    }
+  },
+  "3": {
+    "inputs": {
+      "filename_prefix": "openpose-extract",
+      "images": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save OpenPose PNG"
+    }
+  },
+  "4": {
+    "inputs": {
+      "images": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview OpenPose PNG"
+    }
+  },
+  "5": {
+    "inputs": {
+      "filename_prefix": "openpose-keypoints",
+      "pose_kps": [
+        "2",
+        1
+      ]
+    },
+    "class_type": "SavePoseKpsAsJson",
+    "_meta": {
+      "title": "Save POSE_KEYPOINT JSON"
+    }
+  }
+}
