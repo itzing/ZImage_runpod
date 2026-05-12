@@ -770,6 +770,18 @@ def apply_dynamic_loras_to_control_workflow(prompt, lora_entries):
     )
 
 
+def apply_dynamic_loras_to_i2i_workflow(prompt, lora_entries):
+    return apply_dynamic_loras_to_model_chain(
+        prompt,
+        lora_entries,
+        model_loader_node_id='59:28',
+        consumer_node_id='59:11',
+        consumer_input='model',
+        base_node_id=5500,
+        placeholder_node_ids=['59:35'],
+    )
+
+
 def cleanup_runtime_artifacts(task_id):
     """Cleanup endpoint-local artifacts after each task."""
     paths_to_clean = [
@@ -893,11 +905,18 @@ def handler(job):
     try:
 
             transport_request = get_transport_request(job_input)
-            task_mode = str(job_input.get('task') or job_input.get('mode') or '').strip().lower()
-            is_openpose_extract = task_mode in ('openpose_extract', 'pose_extract', 'extract_openpose', 'extract_pose')
-            secure_condition_image = get_secure_media_input(job_input, ['condition_image', 'source_image', 'image'])
+            task_mode_values = [
+                str(job_input.get('mode') or '').strip().lower(),
+                str(job_input.get('task') or '').strip().lower(),
+                str(job_input.get('task_type') or job_input.get('taskType') or '').strip().lower(),
+            ]
+            task_mode = next((value for value in task_mode_values if value), '')
+            is_openpose_extract = any(value in ('openpose_extract', 'pose_extract', 'extract_openpose', 'extract_pose') for value in task_mode_values)
+            is_i2i = any(value in ('i2i', 'image_to_image', 'image-to-image', 'img2img') for value in task_mode_values)
+            secure_image_roles = ['init_image', 'source_image', 'image'] if is_i2i else ['condition_image', 'source_image', 'image']
+            secure_condition_image = get_secure_media_input(job_input, secure_image_roles)
 
-            # condition/source 이미지 입력 처리 (condition_image/source_image/image variants 중 하나 사용)
+            # condition/source/init 이미지 입력 처리 (mode determines whether the image is ControlNet or I2I init image)
             condition_image_path = None
             if secure_condition_image:
                 condition_image_path = decrypt_media_input_to_file(
@@ -924,6 +943,23 @@ def handler(job):
                 condition_image_path = process_input(job_input["condition_image_url"], task_id, "condition_image.jpg", "url")
             elif "condition_image_base64" in job_input:
                 condition_image_path = process_input(job_input["condition_image_base64"], task_id, "condition_image.jpg", "base64")
+            elif "init_image" in job_input:
+                init_image_data = job_input["init_image"]
+                if isinstance(init_image_data, str):
+                    if init_image_data.startswith("http://") or init_image_data.startswith("https://"):
+                        condition_image_path = process_input(init_image_data, task_id, "init_image.jpg", "url")
+                    elif os.path.exists(init_image_data) or init_image_data.startswith("/"):
+                        condition_image_path = process_input(init_image_data, task_id, "init_image.jpg", "path")
+                    else:
+                        condition_image_path = process_input(init_image_data, task_id, "init_image.jpg", "base64")
+                else:
+                    raise Exception("init_image must be a string.")
+            elif "init_image_path" in job_input:
+                condition_image_path = process_input(job_input["init_image_path"], task_id, "init_image.jpg", "path")
+            elif "init_image_url" in job_input:
+                condition_image_path = process_input(job_input["init_image_url"], task_id, "init_image.jpg", "url")
+            elif "init_image_base64" in job_input:
+                condition_image_path = process_input(job_input["init_image_base64"], task_id, "init_image.jpg", "base64")
             elif "source_image" in job_input:
                 source_image_data = job_input["source_image"]
                 if isinstance(source_image_data, str):
@@ -935,7 +971,7 @@ def handler(job):
                         condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "base64")
                 else:
                     raise Exception("source_image must be a string.")
-            elif "image" in job_input and is_openpose_extract:
+            elif "image" in job_input and (is_openpose_extract or is_i2i):
                 image_data = job_input["image"]
                 if isinstance(image_data, str):
                     if image_data.startswith("http://") or image_data.startswith("https://"):
@@ -945,7 +981,7 @@ def handler(job):
                     else:
                         condition_image_path = process_input(image_data, task_id, "source_image.jpg", "base64")
                 else:
-                    raise Exception("image must be a string for openpose extraction.")
+                    raise Exception("image must be a string for openpose extraction or i2i.")
             elif "source_image_path" in job_input:
                 condition_image_path = process_input(job_input["source_image_path"], task_id, "source_image.jpg", "path")
             elif "source_image_url" in job_input:
@@ -955,6 +991,8 @@ def handler(job):
 
             if is_openpose_extract and not condition_image_path:
                 raise Exception("openpose_extract requires source_image, image, condition_image, or a *_path/url/base64 variant.")
+            if is_i2i and not condition_image_path:
+                raise Exception("i2i requires source_image, init_image, image, condition_image, or a *_path/url/base64 variant.")
 
             if is_mock_secure_flow_enabled():
                 logger.info('Mock secure flow is enabled, skipping ComfyUI execution and returning synthetic transport result')
@@ -964,10 +1002,13 @@ def handler(job):
             lora_list = normalize_lora_entries(job_input)
             has_lora = len(lora_list) > 0
 
-            # 워크플로우 파일 선택 (우선순위: openpose_extract > condition_image > lora > 기본)
+            # 워크플로우 파일 선택 (우선순위: openpose_extract > i2i > condition_image > lora > 기본)
             if is_openpose_extract:
                 workflow_file = "workflow/openpose_extract.json"
                 logger.info(f"Using OpenPose extract workflow: {workflow_file}")
+            elif is_i2i:
+                workflow_file = "workflow/z_image_i2i.json"
+                logger.info(f"Using I2I workflow: {workflow_file}")
             elif condition_image_path:
                 workflow_file = "workflow/z_image_control.json"
                 logger.info(f"Using control workflow: {workflow_file}")
@@ -988,6 +1029,13 @@ def handler(job):
             width = job_input.get("width", 1024)
             height = job_input.get("height", 1024)
             negative_prompt = job_input.get("negative_prompt", job_input.get("negativePrompt", ""))
+            try:
+                denoise = float(job_input.get("denoise", 0.35))
+            except (TypeError, ValueError):
+                raise Exception("denoise must be numeric.")
+            if denoise < 0.0 or denoise > 1.0:
+                logger.warning(f"Denoise value out of range; clamping to [0.0, 1.0]: {denoise}")
+                denoise = max(0.0, min(1.0, denoise))
     
             # 해상도(폭/높이) 16배수 보정
             adjusted_width = to_nearest_multiple_of_16(width)
@@ -1013,6 +1061,19 @@ def handler(job):
                     prompt["2"]["inputs"]["detect_body"] = "enable" if parse_bool_flag(job_input["detect_body"]) else "disable"
 
                 logger.info("OpenPose extraction workflow configured: source_image=...")
+            elif is_i2i:
+                # z_image_i2i.json workflow settings
+                prompt["61"]["inputs"]["image"] = condition_image_path
+                prompt["58"]["inputs"]["value"] = prompt_text
+                prompt["59:3"]["inputs"]["seed"] = seed
+                prompt["59:3"]["inputs"]["steps"] = steps
+                prompt["59:3"]["inputs"]["cfg"] = cfg
+                prompt["59:3"]["inputs"]["denoise"] = denoise
+
+                if has_lora:
+                    prompt = apply_dynamic_loras_to_i2i_workflow(prompt, lora_list)
+
+                logger.info(f"I2I workflow configured with {len(lora_list)} LoRA node(s)")
             elif condition_image_path:
                 # z_image_control.json 워크플로우 설정
                 # 노드 58: LoadImage (condition 이미지)
