@@ -12,39 +12,13 @@
       "title": "이미지 저장"
     }
   },
-  "56": {
-    "inputs": {
-      "images": [
-        "57",
-        0
-      ]
-    },
-    "class_type": "PreviewImage",
-    "_meta": {
-      "title": "이미지 미리보기"
-    }
-  },
-  "57": {
-    "inputs": {
-      "low_threshold": 0.1,
-      "high_threshold": 0.32,
-      "image": [
-        "58",
-        0
-      ]
-    },
-    "class_type": "Canny",
-    "_meta": {
-      "title": "Canny 경계 필터"
-    }
-  },
   "58": {
     "inputs": {
       "image": "image_z_image_turbo_fun_union_controlnet_input_image.png"
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "이미지 로드"
+      "title": "OpenPose/control image load"
     }
   },
   "70:46": {
@@ -153,13 +127,13 @@
         0
       ],
       "image": [
-        "57",
+        "58",
         0
       ]
     },
     "class_type": "QwenImageDiffsynthControlnet",
     "_meta": {
-      "title": "QwenImageDiffsynthControlnet"
+      "title": "Z-Image ControlNet from raw OpenPose/control image"
     }
   },
   "70:41": {
@@ -195,13 +169,13 @@
   "70:69": {
     "inputs": {
       "image": [
-        "57",
+        "58",
         0
       ]
     },
     "class_type": "GetImageSize",
     "_meta": {
-      "title": "이미지 크기 가져오기"
+      "title": "Get control image size"
     }
   },
   "70:39": {

@@ -1,0 +1,10 @@
+{
+  "input": {
+    "task": "openpose_extract",
+    "source_image_url": "https://example.com/source-photo.png",
+    "openpose_resolution": 1024,
+    "detect_body": true,
+    "detect_hand": true,
+    "detect_face": true
+  }
+}
