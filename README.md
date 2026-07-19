@@ -9,6 +9,21 @@ This project is a template designed to easily deploy and use [Flux Krea](https:/
 
 Flux Krea is an advanced AI model that generates high-quality images with creative text-to-image capabilities using the Flux architecture, with support for multiple LoRA (Low-Rank Adaptation) models.
 
+## CyberRealistic ZImage Branch Notes
+
+The `zimage_mpm` branch uses `cyberrealisticZImage_v60.safetensors` mirrored in the public `itzing/mpm-test` Hugging Face repository.
+
+The model is packaged once into the Docker Hub model-provider image `itzing/zimage-cyberrealistic-models:v1`. The endpoint Dockerfile copies the checkpoint from that provider image to `/ComfyUI/models/unet/z_image_turbo_bf16.safetensors`, so the existing workflow JSON files do not need to change and RunPod endpoint builds do not download the 11.7 GiB model from Hugging Face each time.
+
+- digest: `sha256:7add3e5d0a0638f027ef55b7ceb7ba91b7615c270c89f25ef93435d2013c1c31`
+
+To rebuild the model-provider image:
+
+```bash
+docker build -f cyberrealistic-model-provider.Dockerfile -t itzing/zimage-cyberrealistic-models:v1 .
+docker push itzing/zimage-cyberrealistic-models:v1
+```
+
 
 ## 🎨 Engui Studio Integration
 
