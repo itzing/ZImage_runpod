@@ -76,8 +76,8 @@
       "seed": 533303727624653,
       "steps": 9,
       "cfg": 1,
-      "sampler_name": "res_multistep",
-      "scheduler": "simple",
+      "sampler_name": "dpmpp_2s_ancestral",
+      "scheduler": "beta",
       "denoise": 1,
       "model": [
         "47",
@@ -126,7 +126,7 @@
   },
   "47": {
     "inputs": {
-      "shift": 3,
+      "shift": 6,
       "model": [
         "46",
         0
