@@ -1,13 +1,13 @@
 {
-    "title": "Flux Krea, Z-image",
-    "description": "Flux Krea and Z-image are models that can generate and edit images using Flux and Z-image.",
+    "title": "Krea2 Turbo",
+    "description": "Krea2 Turbo text-to-image endpoint with Engui secure transport and dynamic multi-LoRA support.",
     "type": "serverless",
     "category": "image",
     "iconUrl": "https://github.com/wlsdml1114/Engui_Studio/blob/main/assets/logo.png?raw=true",
   
     "config": {
       "runsOn": "GPU",
-      "containerDiskInGb": 30,
+      "containerDiskInGb": 35,
   
       "gpuCount": 1,
       "gpuIds": "ADA_24,ADA_32_PRO",

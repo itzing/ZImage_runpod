@@ -782,6 +782,17 @@ def apply_dynamic_loras_to_i2i_workflow(prompt, lora_entries):
     )
 
 
+def apply_dynamic_loras_to_krea2_workflow(prompt, lora_entries):
+    return apply_dynamic_loras_to_model_chain(
+        prompt,
+        lora_entries,
+        model_loader_node_id='28',
+        consumer_node_id='3',
+        consumer_input='model',
+        base_node_id=6500,
+    )
+
+
 def cleanup_runtime_artifacts(task_id):
     """Cleanup endpoint-local artifacts after each task."""
     paths_to_clean = [
@@ -1013,11 +1024,11 @@ def handler(job):
                 workflow_file = "workflow/z_image_control.json"
                 logger.info(f"Using control workflow: {workflow_file}")
             elif has_lora:
-                workflow_file = "workflow/z_image_lora.json"
-                logger.info(f"Using LoRA workflow: {workflow_file}")
+                workflow_file = "workflow/krea2.json"
+                logger.info(f"Using Krea2 LoRA workflow: {workflow_file}")
             else:
-                workflow_file = "workflow/z_image.json"
-                logger.info(f"Using text-only workflow: {workflow_file}")
+                workflow_file = "workflow/krea2.json"
+                logger.info(f"Using Krea2 text-only workflow: {workflow_file}")
 
             prompt = load_workflow(workflow_file)
 
@@ -1103,37 +1114,31 @@ def handler(job):
         
                 logger.info("OpenPose/control workflow configured: condition_image=..., prompt=...")
             elif has_lora:
-                # z_image_lora.json 워크플로우 설정
-                # 노드 58: PrimitiveStringMultiline (프롬프트)
-                prompt["58"]["inputs"]["value"] = prompt_text
+                # krea2.json workflow settings
+                prompt["27"]["inputs"]["text"] = prompt_text
 
-                # 노드 59:13: EmptySD3LatentImage (width, height)
-                prompt["59:13"]["inputs"]["width"] = adjusted_width
-                prompt["59:13"]["inputs"]["height"] = adjusted_height
+                prompt["13"]["inputs"]["width"] = adjusted_width
+                prompt["13"]["inputs"]["height"] = adjusted_height
 
-                # 노드 59:3: KSampler (seed, steps, cfg)
-                prompt["59:3"]["inputs"]["seed"] = seed
-                prompt["59:3"]["inputs"]["steps"] = steps
-                prompt["59:3"]["inputs"]["cfg"] = cfg
+                prompt["3"]["inputs"]["seed"] = seed
+                prompt["3"]["inputs"]["steps"] = steps
+                prompt["3"]["inputs"]["cfg"] = cfg
 
-                prompt = apply_dynamic_loras_to_workflow(prompt, lora_list)
+                prompt = apply_dynamic_loras_to_krea2_workflow(prompt, lora_list)
 
-                logger.info(f"LoRA workflow configured with {len(lora_list)} LoRA node(s)")
+                logger.info(f"Krea2 LoRA workflow configured with {len(lora_list)} LoRA node(s)")
             else:
-                # z_image.json 워크플로우 설정
-                # 노드 45: CLIPTextEncode (프롬프트)
-                prompt["45"]["inputs"]["text"] = prompt_text
+                # krea2.json workflow settings
+                prompt["27"]["inputs"]["text"] = prompt_text
         
-                # 노드 44: KSampler (seed, steps, cfg)
-                prompt["44"]["inputs"]["seed"] = seed
-                prompt["44"]["inputs"]["steps"] = steps
-                prompt["44"]["inputs"]["cfg"] = cfg
+                prompt["3"]["inputs"]["seed"] = seed
+                prompt["3"]["inputs"]["steps"] = steps
+                prompt["3"]["inputs"]["cfg"] = cfg
         
-                # 노드 41: EmptySD3LatentImage (width, height)
-                prompt["41"]["inputs"]["width"] = adjusted_width
-                prompt["41"]["inputs"]["height"] = adjusted_height
+                prompt["13"]["inputs"]["width"] = adjusted_width
+                prompt["13"]["inputs"]["height"] = adjusted_height
         
-                logger.info("Text-only workflow 설정 완료: prompt=...")
+                logger.info("Krea2 text-only workflow configured: prompt=...")
 
             ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
             logger.info(f"Connecting to WebSocket: {ws_url}")
@@ -1196,7 +1201,7 @@ def handler(job):
                                 job_id = 'unknown-job'
 
                             attempt_id = secure_binding.get('attempt_id') or media_binding.get('attempt_id') or job_input.get('attempt_id') or 'unknown-attempt'
-                            model_id = secure_binding.get('model_id') or media_binding.get('model_id') or job_input.get('model_id') or 'z-image'
+                            model_id = secure_binding.get('model_id') or media_binding.get('model_id') or job_input.get('model_id') or 'krea2-turbo'
                             output_file_name = transport_request.get('output_file_name') or build_secure_result_filename(job_id, attempt_id)
                             output_path = os.path.join(
                                 transport_request['output_dir'],

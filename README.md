@@ -1,13 +1,13 @@
-# Flux Krea for RunPod Serverless
+# Krea2 Turbo for RunPod Serverless
 [한국어 README 보기](README_kr.md)
 
 > Secure RunPod migration note: see `SECURE-CONTRACT.md` for the Engui migration-era contract, including `_secure`, `media_inputs`, `transport_request`, `transport_result`, and legacy fallback scope.
 
-This project is a template designed to easily deploy and use [Flux Krea](https://bfl.ai/blog/flux-1-krea-dev) in the RunPod Serverless environment.
+This branch is an Engui Studio endpoint for Krea2 Turbo text-to-image generation in the RunPod Serverless environment.
 
 [![Runpod](https://api.runpod.io/badge/wlsdml1114/Flux-krea_Runpod_hub)](https://console.runpod.io/hub/wlsdml1114/Flux-krea_Runpod_hub)
 
-Flux Krea is an advanced AI model that generates high-quality images with creative text-to-image capabilities using the Flux architecture, with support for multiple LoRA (Low-Rank Adaptation) models.
+Krea2 Turbo is an 8-step distilled Krea2 checkpoint for fast image generation. This endpoint keeps the Engui secure transport contract and supports multiple model-only LoRAs.
 
 
 ## 🎨 Engui Studio Integration
@@ -26,12 +26,12 @@ This InfiniteTalk template is primarily designed for **Engui Studio**, a compreh
 
 ## ✨ Key Features
 
-*   **Text-to-Image Generation**: Creates high-quality images from text descriptions with advanced Flux architecture.
+*   **Text-to-Image Generation**: Creates high-quality images from text descriptions with Krea2 Turbo.
 *   **Multi-LoRA Support**: Supports multiple LoRA models simultaneously for enhanced customization.
 *   **Dynamic Model Loading**: Automatically selects the LoRA workflow when LoRA inputs are present.
 *   **Customizable Parameters**: Control image generation with various parameters including seed, guidance, width, height, and prompts.
 *   **ComfyUI Integration**: Built on top of ComfyUI for flexible workflow management.
-*   **Dual CLIP Support**: Enhanced text understanding with dual CLIP model integration.
+*   **Secure Engui Transport**: Supports `_secure`, `transport_request`, and encrypted `transport_result` flows.
 
 ## 🚀 RunPod Serverless Template
 
@@ -50,10 +50,10 @@ The `input` object must contain the following fields. All parameters except `mod
 | --- | --- | --- | --- | --- |
 | `prompt` | `string` | **Yes** | `N/A` | Description text for the image to be generated. |
 | `seed` | `integer` | **Yes** | `N/A` | Random seed for image generation (affects output randomness). |
-| `guidance` | `float` | **Yes** | `N/A` | Guidance scale for controlling generation adherence to prompt. |
+| `cfg` | `float` | **No** | `1.0` | CFG scale for sampling. |
 | `width` | `integer` | **Yes** | `N/A` | Width of the output image in pixels. |
 | `height` | `integer` | **Yes** | `N/A` | Height of the output image in pixels. |
-| `model` | `string` | **No** | `flux1-krea-dev_fp8_scaled.safetensors` | Custom model path (requires Network Volume). |
+| `steps` | `integer` | **No** | `8` | Sampling steps. |
 | `lora` | `array` | **No** | `[]` | Array of LoRA configurations as `[model_path, weight]` tuples (requires Network Volume). |
 
 **LoRA Configuration:**
