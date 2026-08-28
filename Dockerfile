@@ -1,5 +1,6 @@
 # Use specific version of nvidia cuda image
-FROM wlsdml1114/multitalk-base:1.4 as runtime
+FROM itzing/krea2-turbo-models:v1 AS krea2_model_provider
+FROM wlsdml1114/multitalk-base:1.4 AS runtime
 
 # wget 설치 (URL 다운로드를 위해)
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
@@ -19,10 +20,10 @@ RUN cd /ComfyUI/custom_nodes && \
     cd ComfyUI-Manager && \
     pip install -r requirements.txt
 
-RUN mkdir -p /ComfyUI/models/diffusion_models /ComfyUI/models/text_encoders /ComfyUI/models/vae /ComfyUI/models/loras && \
-    wget https://huggingface.co/Comfy-Org/Krea-2/resolve/main/split_files/diffusion_models/krea2_turbo_fp8_scaled.safetensors -O /ComfyUI/models/diffusion_models/krea2_turbo_fp8_scaled.safetensors && \
-    wget https://huggingface.co/Comfy-Org/Krea-2/resolve/main/split_files/text_encoders/qwen3vl_4b_fp8_scaled.safetensors -O /ComfyUI/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors && \
-    wget https://huggingface.co/Comfy-Org/Krea-2/resolve/main/split_files/vae/qwen_image_vae.safetensors -O /ComfyUI/models/vae/qwen_image_vae.safetensors
+RUN mkdir -p /ComfyUI/models/diffusion_models /ComfyUI/models/text_encoders /ComfyUI/models/vae /ComfyUI/models/loras
+COPY --from=krea2_model_provider /models/diffusion_models/krea2_turbo_fp8_scaled.safetensors /ComfyUI/models/diffusion_models/krea2_turbo_fp8_scaled.safetensors
+COPY --from=krea2_model_provider /models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors /ComfyUI/models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors
+COPY --from=krea2_model_provider /models/vae/qwen_image_vae.safetensors /ComfyUI/models/vae/qwen_image_vae.safetensors
 
 
 COPY . .
