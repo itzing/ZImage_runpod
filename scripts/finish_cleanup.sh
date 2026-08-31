@@ -44,5 +44,5 @@ for dir in "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR"; do
   fi
 done
 
-# 3) Optional: ask Comfy to free memory / unload models
-post_json "free" '{"free_memory":true,"unload_models":true}'
+# 3) Ask Comfy to release disposable allocations while keeping hot models resident.
+post_json "free" '{"free_memory":true,"unload_models":false}'
