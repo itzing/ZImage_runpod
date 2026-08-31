@@ -43,6 +43,3 @@ for dir in "$INPUT_DIR" "$OUTPUT_DIR" "$TEMP_DIR"; do
     find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
   fi
 done
-
-# 3) Ask Comfy to release disposable allocations while keeping hot models resident.
-post_json "free" '{"free_memory":true,"unload_models":false}'
