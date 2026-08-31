@@ -646,6 +646,91 @@ def get_outputs(ws, prompt):
     return output_images, output_artifacts, prompt_id
 
 
+def get_warmup_workflow_path():
+    configured_workflow = os.getenv('COMFY_WARMUP_WORKFLOW')
+    if configured_workflow:
+        return configured_workflow
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for workflow_path in ('workflow/krea2.json', 'workflow/z_image.json'):
+        if os.path.exists(os.path.join(base_dir, workflow_path)):
+            return workflow_path
+
+    return None
+
+
+def configure_warmup_prompt(prompt):
+    warmup_text = os.getenv('COMFY_WARMUP_PROMPT', 'A simple studio portrait.')
+    warmup_width = int(os.getenv('COMFY_WARMUP_WIDTH', '128'))
+    warmup_height = int(os.getenv('COMFY_WARMUP_HEIGHT', '128'))
+    warmup_steps = int(os.getenv('COMFY_WARMUP_STEPS', '1'))
+    warmup_cfg = float(os.getenv('COMFY_WARMUP_CFG', '1'))
+
+    for node in prompt.values():
+        inputs = node.get('inputs', {})
+        class_type = node.get('class_type')
+
+        if class_type == 'CLIPTextEncode' and 'text' in inputs:
+            inputs['text'] = warmup_text
+        if 'width' in inputs and 'height' in inputs:
+            inputs['width'] = warmup_width
+            inputs['height'] = warmup_height
+        if class_type == 'KSampler':
+            if 'seed' in inputs:
+                inputs['seed'] = 1
+            if 'steps' in inputs:
+                inputs['steps'] = warmup_steps
+            if 'cfg' in inputs:
+                inputs['cfg'] = warmup_cfg
+        if class_type == 'SaveImage' and 'filename_prefix' in inputs:
+            inputs['filename_prefix'] = 'warmup'
+
+    return prompt
+
+
+def run_comfy_warmup():
+    if not parse_bool_flag(os.getenv('COMFY_WARMUP_ENABLED', '1')):
+        logger.info('ComfyUI warmup disabled')
+        return
+
+    workflow_path = get_warmup_workflow_path()
+    if not workflow_path:
+        logger.warning('ComfyUI warmup skipped: no warmup workflow found')
+        return
+
+    prompt_id = None
+    ws = None
+    started_at = time.time()
+    logger.info(f'Starting ComfyUI warmup with workflow: {workflow_path}')
+
+    try:
+        prompt = configure_warmup_prompt(load_workflow(workflow_path))
+        ws = websocket.WebSocket()
+        ws.connect(f'ws://{server_address}:8188/ws?clientId={client_id}')
+        _, _, prompt_id = get_outputs(ws, prompt)
+        logger.info(f'ComfyUI warmup completed in {time.time() - started_at:.2f}s')
+    except Exception as warmup_error:
+        if parse_bool_flag(os.getenv('COMFY_WARMUP_REQUIRED', '0')):
+            raise
+        logger.warning(f'ComfyUI warmup failed, continuing without warm cache: {warmup_error}')
+    finally:
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        if prompt_id:
+            try:
+                cleanup_script = os.getenv('FINISH_CLEANUP_SCRIPT', '/scripts/finish_cleanup.sh')
+                if os.path.exists(cleanup_script):
+                    subprocess.run([
+                        cleanup_script,
+                        prompt_id
+                    ], check=False, env={**os.environ, 'COMFY_BASE_URL': f'http://{server_address}:8188'})
+            except Exception as cleanup_error:
+                logger.warning(f'Warmup cleanup warning: {cleanup_error}')
+
+
 def get_images(ws, prompt):
     output_images, _output_artifacts, prompt_id = get_outputs(ws, prompt)
     return output_images, prompt_id
@@ -1287,4 +1372,5 @@ def handler(job):
         except Exception as cleanup_verify_error:
             logger.warning(f"Cleanup verify warning: {cleanup_verify_error}")
 
+run_comfy_warmup()
 runpod.serverless.start({"handler": handler})
