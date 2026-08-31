@@ -8,10 +8,7 @@ echo "Starting ComfyUI in RAM mode..."
 RUNTIME_ROOT=${RUNTIME_ROOT:-/dev/shm/comfy-runtime}
 mkdir -p "$RUNTIME_ROOT/input" "$RUNTIME_ROOT/output" "$RUNTIME_ROOT/temp" "$RUNTIME_ROOT/user/default/ComfyUI-Manager"
 cp /ComfyUI/user/default/ComfyUI-Manager/config.ini "$RUNTIME_ROOT/user/default/ComfyUI-Manager/config.ini"
-COMFY_ARGS=(--listen)
-if [[ "${ENABLE_SAGE_ATTENTION:-0}" == "1" ]]; then
-  COMFY_ARGS+=(--use-sage-attention)
-fi
+COMFY_ARGS=(--listen --disable-xformers)
 python /ComfyUI/main.py "${COMFY_ARGS[@]}" \
   --input-directory "$RUNTIME_ROOT/input" \
   --output-directory "$RUNTIME_ROOT/output" \
