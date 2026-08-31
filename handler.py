@@ -647,24 +647,15 @@ def get_outputs(ws, prompt):
 
 
 def get_warmup_workflow_path():
-    configured_workflow = os.getenv('COMFY_WARMUP_WORKFLOW')
-    if configured_workflow:
-        return configured_workflow
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    for workflow_path in ('workflow/krea2.json', 'workflow/z_image.json'):
-        if os.path.exists(os.path.join(base_dir, workflow_path)):
-            return workflow_path
-
-    return None
+    return 'workflow/krea2.json'
 
 
 def configure_warmup_prompt(prompt):
-    warmup_text = os.getenv('COMFY_WARMUP_PROMPT', 'A simple studio portrait.')
-    warmup_width = int(os.getenv('COMFY_WARMUP_WIDTH', '128'))
-    warmup_height = int(os.getenv('COMFY_WARMUP_HEIGHT', '128'))
-    warmup_steps = int(os.getenv('COMFY_WARMUP_STEPS', '1'))
-    warmup_cfg = float(os.getenv('COMFY_WARMUP_CFG', '1'))
+    warmup_text = 'A simple studio portrait.'
+    warmup_width = 128
+    warmup_height = 128
+    warmup_steps = 1
+    warmup_cfg = 1
 
     for node in prompt.values():
         inputs = node.get('inputs', {})
@@ -689,15 +680,7 @@ def configure_warmup_prompt(prompt):
 
 
 def run_comfy_warmup():
-    if not parse_bool_flag(os.getenv('COMFY_WARMUP_ENABLED', '1')):
-        logger.info('ComfyUI warmup disabled')
-        return
-
     workflow_path = get_warmup_workflow_path()
-    if not workflow_path:
-        logger.warning('ComfyUI warmup skipped: no warmup workflow found')
-        return
-
     prompt_id = None
     ws = None
     started_at = time.time()
@@ -709,10 +692,6 @@ def run_comfy_warmup():
         ws.connect(f'ws://{server_address}:8188/ws?clientId={client_id}')
         _, _, prompt_id = get_outputs(ws, prompt)
         logger.info(f'ComfyUI warmup completed in {time.time() - started_at:.2f}s')
-    except Exception as warmup_error:
-        if parse_bool_flag(os.getenv('COMFY_WARMUP_REQUIRED', '0')):
-            raise
-        logger.warning(f'ComfyUI warmup failed, continuing without warm cache: {warmup_error}')
     finally:
         if ws:
             try:
@@ -1232,8 +1211,8 @@ def handler(job):
             http_url = f"http://{server_address}:8188/"
             logger.info(f"Checking HTTP connection to: {http_url}")
     
-            # HTTP 연결 확인 (최대 1분)
-            max_http_attempts = 180
+            # Fail quickly if ComfyUI died after worker startup.
+            max_http_attempts = 5
             for http_attempt in range(max_http_attempts):
                 try:
                     import urllib.request
@@ -1247,8 +1226,7 @@ def handler(job):
                     time.sleep(1)
     
             ws = websocket.WebSocket()
-            # 웹소켓 연결 시도 (최대 3분)
-            max_attempts = int(180/5)  # 3분 (5초에 한 번씩 시도)
+            max_attempts = 3
             for attempt in range(max_attempts):
                 try:
                     ws.connect(ws_url)
