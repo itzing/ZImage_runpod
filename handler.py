@@ -13,6 +13,7 @@ import binascii # Base64 에러 처리를 위해 import
 import subprocess
 import time
 import shutil
+import hashlib
 import boto3
 from botocore.exceptions import NoCredentialsError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -27,6 +28,16 @@ client_id = str(uuid.uuid4())
 
 WRAPPED_KEY_PREFIX = 'v1:'
 MOCK_RESULT_IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAA/ElEQVR42u3RgQkAMBACMUf/zW3XEAIOcJI0nd54/v4DAPIBeCAfgAfyAXggH4AH8gF4IB+AB/IBeCAfgAfyAXggH4AH8gF4IB+AB/IBeCAfgAfyAXggH4AHAOR7AEC+BwDkewBAvgcA5HsAQL4HAOR7AEC+BwDkewBAvgcA5HsAQL4HAOR7AEC+BwDk21+u2wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACuD9FLlvr9zn4JAAAAAElFTkSuQmCC'
+LORA_CACHE_RELATIVE_DIR = os.getenv('LORA_CACHE_RELATIVE_DIR', '_runtime_cache').strip('/ ')
+LORA_CACHE_ROOT = os.path.abspath(os.getenv('LORA_CACHE_DIR', f'/ComfyUI/models/loras/{LORA_CACHE_RELATIVE_DIR}'))
+LORA_SOURCE_ROOTS = [
+    root
+    for root in (
+        os.getenv('LORA_SOURCE_ROOTS', '/runpod-volume/loras:/ComfyUI/models/loras')
+        .split(os.pathsep)
+    )
+    if root
+]
 
 
 def mask_job_input_for_log(job_input):
@@ -780,6 +791,94 @@ def normalize_lora_entries(job_input):
     return normalized
 
 
+def is_path_inside(path, root):
+    try:
+        common = os.path.commonpath([os.path.realpath(path), os.path.realpath(root)])
+        return common == os.path.realpath(root)
+    except ValueError:
+        return False
+
+
+def resolve_lora_source_path(lora_name):
+    source_roots = [os.path.abspath(root) for root in LORA_SOURCE_ROOTS]
+    requested_path = os.path.realpath(lora_name) if os.path.isabs(lora_name) else None
+
+    if requested_path:
+        for root in source_roots:
+            if is_path_inside(requested_path, root) and os.path.isfile(requested_path):
+                if is_path_inside(requested_path, LORA_CACHE_ROOT):
+                    return requested_path
+                return requested_path
+        raise Exception('LoRA path must be inside configured LoRA source roots.')
+
+    for root in source_roots:
+        candidate = os.path.realpath(os.path.join(root, lora_name))
+        if not is_path_inside(candidate, root):
+            raise Exception('LoRA filename must not escape configured LoRA source roots.')
+        if os.path.isfile(candidate):
+            return candidate
+
+    raise Exception('LoRA file was not found in configured LoRA source roots.')
+
+
+def build_lora_cache_name(source_path):
+    source_stat = os.stat(source_path)
+    source_identity = '\0'.join([
+        os.path.realpath(source_path),
+        str(source_stat.st_size),
+        str(source_stat.st_mtime_ns),
+    ])
+    digest = hashlib.sha256(source_identity.encode('utf-8')).hexdigest()[:32]
+    extension = os.path.splitext(source_path)[1] or '.safetensors'
+    return f'lora_{digest}{extension}', source_stat.st_size
+
+
+def stage_lora_to_local_cache(lora_name):
+    source_path = resolve_lora_source_path(lora_name)
+
+    if is_path_inside(source_path, LORA_CACHE_ROOT):
+        return os.path.relpath(source_path, '/ComfyUI/models/loras')
+
+    cache_file_name, source_size = build_lora_cache_name(source_path)
+    cache_path = os.path.join(LORA_CACHE_ROOT, cache_file_name)
+    staged_lora_name = os.path.join(LORA_CACHE_RELATIVE_DIR, cache_file_name)
+
+    os.makedirs(LORA_CACHE_ROOT, exist_ok=True)
+
+    if os.path.isfile(cache_path) and os.path.getsize(cache_path) == source_size:
+        logger.info(f'LoRA cache hit: id={cache_file_name}, size_bytes={source_size}')
+        return staged_lora_name
+
+    copy_started = time.time()
+    temp_path = f'{cache_path}.tmp.{uuid.uuid4().hex}'
+    try:
+        shutil.copyfile(source_path, temp_path)
+        os.replace(temp_path, cache_path)
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+    elapsed = max(time.time() - copy_started, 0.001)
+    throughput = (source_size / 1024 / 1024) / elapsed
+    logger.info(
+        f'LoRA cache miss: id={cache_file_name}, size_bytes={source_size}, '
+        f'copy_seconds={elapsed:.3f}, throughput_mbps={throughput:.2f}'
+    )
+    return staged_lora_name
+
+
+def stage_lora_entries(lora_entries):
+    staged = []
+
+    for lora_name, strength in lora_entries:
+        staged.append([stage_lora_to_local_cache(lora_name), strength])
+
+    return staged
+
+
 def apply_dynamic_loras_to_model_chain(prompt, lora_entries, model_loader_node_id, consumer_node_id, consumer_input='model', base_node_id=3500, placeholder_node_ids=None):
     if not lora_entries:
         return prompt
@@ -1064,6 +1163,8 @@ def handler(job):
 
             # LoRA 확인
             lora_list = normalize_lora_entries(job_input)
+            if lora_list:
+                lora_list = stage_lora_entries(lora_list)
             has_lora = len(lora_list) > 0
 
             # 워크플로우 파일 선택 (우선순위: openpose_extract > i2i > condition_image > lora > 기본)
