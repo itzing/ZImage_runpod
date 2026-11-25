@@ -1,5 +1,5 @@
 import math
-from krea2_i2i import configure_i2i
+from krea2_i2i import configure_i2i, comfy_input_directory
 import runpod
 from runpod.serverless.utils import rp_upload
 import os
@@ -595,7 +595,16 @@ def queue_prompt(prompt):
     p = {"prompt": prompt, "client_id": client_id}
     data = json.dumps(p).encode('utf-8')
     req = urllib.request.Request(url, data=data)
-    return json.loads(urllib.request.urlopen(req).read())
+    try:
+        return json.loads(urllib.request.urlopen(req).read())
+    except urllib.error.HTTPError as error:
+        # Report graph validation codes, never prompt text or submitted input values.
+        try:
+            failure = json.loads(error.read())
+            codes = [f"{node}:{item.get('type', 'invalid')}" for node, detail in failure.get('node_errors', {}).items() for item in detail.get('errors', [])]
+        except Exception:
+            codes = []
+        raise RuntimeError(f"ComfyUI rejected graph (HTTP {error.code}); node errors: {', '.join(codes) or 'unavailable'}") from None
 
 def get_image(filename, subfolder, folder_type):
     url = f"http://{server_address}:8188/view"
@@ -1075,6 +1084,7 @@ def handler(job):
 
     logger.info(f"Received job input (masked): {mask_job_input_for_log(job_input)}")
     task_id = f"task_{uuid.uuid4()}"
+    task_dir = comfy_input_directory(task_id)
     prompt_id = None
     db_snapshot_before = collect_db_snapshot()
 
@@ -1097,7 +1107,7 @@ def handler(job):
             if secure_condition_image:
                 condition_image_path = decrypt_media_input_to_file(
                     secure_condition_image,
-                    os.path.abspath(os.path.join(task_id, 'condition_image.bin'))
+                    os.path.join(task_dir, 'condition_image' + {'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp'}.get(secure_condition_image.get('mime'), '.png'))
                 )
                 logger.info('Using secure media_inputs condition image')
             elif "condition_image" in job_input:
@@ -1105,65 +1115,65 @@ def handler(job):
                 condition_image_data = job_input["condition_image"]
                 if isinstance(condition_image_data, str):
                     if condition_image_data.startswith("http://") or condition_image_data.startswith("https://"):
-                        condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "url")
+                        condition_image_path = process_input(condition_image_data, task_dir, "condition_image.jpg", "url")
                     elif os.path.exists(condition_image_data) or condition_image_data.startswith("/"):
-                        condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "path")
+                        condition_image_path = process_input(condition_image_data, task_dir, "condition_image.jpg", "path")
                     else:
                         # Base64로 간주
-                        condition_image_path = process_input(condition_image_data, task_id, "condition_image.jpg", "base64")
+                        condition_image_path = process_input(condition_image_data, task_dir, "condition_image.jpg", "base64")
                 else:
                     raise Exception("condition_image 파라미터는 문자열이어야 합니다.")
             elif "condition_image_path" in job_input:
-                condition_image_path = process_input(job_input["condition_image_path"], task_id, "condition_image.jpg", "path")
+                condition_image_path = process_input(job_input["condition_image_path"], task_dir, "condition_image.jpg", "path")
             elif "condition_image_url" in job_input:
-                condition_image_path = process_input(job_input["condition_image_url"], task_id, "condition_image.jpg", "url")
+                condition_image_path = process_input(job_input["condition_image_url"], task_dir, "condition_image.jpg", "url")
             elif "condition_image_base64" in job_input:
-                condition_image_path = process_input(job_input["condition_image_base64"], task_id, "condition_image.jpg", "base64")
+                condition_image_path = process_input(job_input["condition_image_base64"], task_dir, "condition_image.jpg", "base64")
             elif "init_image" in job_input:
                 init_image_data = job_input["init_image"]
                 if isinstance(init_image_data, str):
                     if init_image_data.startswith("http://") or init_image_data.startswith("https://"):
-                        condition_image_path = process_input(init_image_data, task_id, "init_image.jpg", "url")
+                        condition_image_path = process_input(init_image_data, task_dir, "init_image.jpg", "url")
                     elif os.path.exists(init_image_data) or init_image_data.startswith("/"):
-                        condition_image_path = process_input(init_image_data, task_id, "init_image.jpg", "path")
+                        condition_image_path = process_input(init_image_data, task_dir, "init_image.jpg", "path")
                     else:
-                        condition_image_path = process_input(init_image_data, task_id, "init_image.jpg", "base64")
+                        condition_image_path = process_input(init_image_data, task_dir, "init_image.jpg", "base64")
                 else:
                     raise Exception("init_image must be a string.")
             elif "init_image_path" in job_input:
-                condition_image_path = process_input(job_input["init_image_path"], task_id, "init_image.jpg", "path")
+                condition_image_path = process_input(job_input["init_image_path"], task_dir, "init_image.jpg", "path")
             elif "init_image_url" in job_input:
-                condition_image_path = process_input(job_input["init_image_url"], task_id, "init_image.jpg", "url")
+                condition_image_path = process_input(job_input["init_image_url"], task_dir, "init_image.jpg", "url")
             elif "init_image_base64" in job_input:
-                condition_image_path = process_input(job_input["init_image_base64"], task_id, "init_image.jpg", "base64")
+                condition_image_path = process_input(job_input["init_image_base64"], task_dir, "init_image.jpg", "base64")
             elif "source_image" in job_input:
                 source_image_data = job_input["source_image"]
                 if isinstance(source_image_data, str):
                     if source_image_data.startswith("http://") or source_image_data.startswith("https://"):
-                        condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "url")
+                        condition_image_path = process_input(source_image_data, task_dir, "source_image.jpg", "url")
                     elif os.path.exists(source_image_data) or source_image_data.startswith("/"):
-                        condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "path")
+                        condition_image_path = process_input(source_image_data, task_dir, "source_image.jpg", "path")
                     else:
-                        condition_image_path = process_input(source_image_data, task_id, "source_image.jpg", "base64")
+                        condition_image_path = process_input(source_image_data, task_dir, "source_image.jpg", "base64")
                 else:
                     raise Exception("source_image must be a string.")
             elif "image" in job_input and (is_openpose_extract or is_i2i):
                 image_data = job_input["image"]
                 if isinstance(image_data, str):
                     if image_data.startswith("http://") or image_data.startswith("https://"):
-                        condition_image_path = process_input(image_data, task_id, "source_image.jpg", "url")
+                        condition_image_path = process_input(image_data, task_dir, "source_image.jpg", "url")
                     elif os.path.exists(image_data) or image_data.startswith("/"):
-                        condition_image_path = process_input(image_data, task_id, "source_image.jpg", "path")
+                        condition_image_path = process_input(image_data, task_dir, "source_image.jpg", "path")
                     else:
-                        condition_image_path = process_input(image_data, task_id, "source_image.jpg", "base64")
+                        condition_image_path = process_input(image_data, task_dir, "source_image.jpg", "base64")
                 else:
                     raise Exception("image must be a string for openpose extraction or i2i.")
             elif "source_image_path" in job_input:
-                condition_image_path = process_input(job_input["source_image_path"], task_id, "source_image.jpg", "path")
+                condition_image_path = process_input(job_input["source_image_path"], task_dir, "source_image.jpg", "path")
             elif "source_image_url" in job_input:
-                condition_image_path = process_input(job_input["source_image_url"], task_id, "source_image.jpg", "url")
+                condition_image_path = process_input(job_input["source_image_url"], task_dir, "source_image.jpg", "url")
             elif "source_image_base64" in job_input:
-                condition_image_path = process_input(job_input["source_image_base64"], task_id, "source_image.jpg", "base64")
+                condition_image_path = process_input(job_input["source_image_base64"], task_dir, "source_image.jpg", "base64")
 
             if is_openpose_extract and not condition_image_path:
                 raise Exception("openpose_extract requires source_image, image, condition_image, or a *_path/url/base64 variant.")
@@ -1438,7 +1448,7 @@ def handler(job):
         except Exception as cleanup_script_error:
             logger.warning(f"Cleanup script warning: {cleanup_script_error}")
 
-        cleanup_runtime_artifacts(task_id)
+        cleanup_runtime_artifacts(task_dir)
 
         try:
             cleanup_state = collect_cleanup_state()
