@@ -239,3 +239,9 @@ This project is based on the following original repository. All rights to the mo
 ## 📄 License
 
 The original Flux Krea project follows its respective license. This template also adheres to that license.
+
+## Krea2 image-to-image (Engui ENGUI-612)
+
+Use `mode: "i2i"` or `task_type: "image_to_image"`, one encrypted `media_inputs` entry with role `init_image` (legacy `source_image` accepted), prompt and `denoise` from 0 to 1 (default 0.35). Defaults: 8 steps, CFG 1. The dedicated `workflow/krea2_i2i.json` uses the same baked Krea2 UNet, Qwen3VL encoder and Qwen Image VAE as text-to-image. It resizes the entire source to requested width/height (bicubic, no crop) before VAE encoding. Choose matching aspect ratios to avoid stretching. This is latent img2img, not instruction/mask editing or ControlNet. Lower denoise preserves more source structure, but even denoise=0 performs a lossy VAE round trip. Existing multi-LoRA weights and encrypted output contract are retained. Text mode still uses an empty latent at denoise=1. No extra model weights, runtime downloads or model-cache volume are required.
+
+CPU graph/LoRA regression: `python3 -m unittest discover -s tests -v`. Real GPU validation is required before claiming inference quality.

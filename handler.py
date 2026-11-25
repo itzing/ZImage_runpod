@@ -1,3 +1,5 @@
+import math
+from krea2_i2i import configure_i2i
 import runpod
 from runpod.serverless.utils import rp_upload
 import os
@@ -1168,6 +1170,9 @@ def handler(job):
             if is_i2i and not condition_image_path:
                 raise Exception("i2i requires source_image, init_image, image, condition_image, or a *_path/url/base64 variant.")
 
+            if is_openpose_extract or (condition_image_path and not is_i2i):
+                raise ValueError("Krea2 supports text or i2i, not ControlNet/OpenPose. Use explicit mode=i2i for an init image.")
+
             if is_mock_secure_flow_enabled():
                 logger.info('Mock secure flow is enabled, skipping ComfyUI execution and returning synthetic transport result')
                 return build_mock_secure_response(job, job_input, transport_request, task_id)
@@ -1183,7 +1188,7 @@ def handler(job):
                 workflow_file = "workflow/openpose_extract.json"
                 logger.info(f"Using OpenPose extract workflow: {workflow_file}")
             elif is_i2i:
-                workflow_file = "workflow/z_image_i2i.json"
+                workflow_file = "workflow/krea2_i2i.json"
                 logger.info(f"Using I2I workflow: {workflow_file}")
             elif condition_image_path:
                 workflow_file = "workflow/z_image_control.json"
@@ -1200,7 +1205,7 @@ def handler(job):
             # 공통 설정
             prompt_text = job_input.get("prompt", "")
             seed = job_input.get("seed", 533303727624653)
-            steps = job_input.get("steps", 9)
+            steps = job_input.get("steps", 8)
             cfg = job_input.get("cfg", 1.0)
             width = job_input.get("width", 1024)
             height = job_input.get("height", 1024)
@@ -1209,9 +1214,8 @@ def handler(job):
                 denoise = float(job_input.get("denoise", 0.35))
             except (TypeError, ValueError):
                 raise Exception("denoise must be numeric.")
-            if denoise < 0.0 or denoise > 1.0:
-                logger.warning(f"Denoise value out of range; clamping to [0.0, 1.0]: {denoise}")
-                denoise = max(0.0, min(1.0, denoise))
+            if not math.isfinite(denoise) or not 0.0 <= denoise <= 1.0:
+                raise ValueError("denoise must be a finite number in [0, 1].")
     
             # 해상도(폭/높이) 16배수 보정
             adjusted_width = to_nearest_multiple_of_16(width)
@@ -1238,18 +1242,14 @@ def handler(job):
 
                 logger.info("OpenPose extraction workflow configured: source_image=...")
             elif is_i2i:
-                # z_image_i2i.json workflow settings
-                prompt["61"]["inputs"]["image"] = condition_image_path
-                prompt["58"]["inputs"]["value"] = prompt_text
-                prompt["59:3"]["inputs"]["seed"] = seed
-                prompt["59:3"]["inputs"]["steps"] = steps
-                prompt["59:3"]["inputs"]["cfg"] = cfg
-                prompt["59:3"]["inputs"]["denoise"] = denoise
-
+                prompt = configure_i2i(
+                    prompt, image_path=condition_image_path, prompt=prompt_text,
+                    seed=seed, steps=steps, cfg=cfg, width=adjusted_width,
+                    height=adjusted_height, denoise=denoise, negative_prompt=negative_prompt,
+                )
                 if has_lora:
-                    prompt = apply_dynamic_loras_to_i2i_workflow(prompt, lora_list)
-
-                logger.info(f"I2I workflow configured with {len(lora_list)} LoRA node(s)")
+                    prompt = apply_dynamic_loras_to_krea2_workflow(prompt, lora_list)
+                logger.info(f"Krea2 I2I workflow configured with {len(lora_list)} LoRA node(s)")
             elif condition_image_path:
                 # z_image_control.json 워크플로우 설정
                 # 노드 58: LoadImage (condition 이미지)
