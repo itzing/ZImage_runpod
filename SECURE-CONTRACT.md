@@ -210,3 +210,9 @@ Before a real end-to-end run, verify:
 - successful secure response returns `transport_result.status = "completed"`
 - transport failure returns normalized `transport_result.status = "failed"`
 - legacy fallback behavior remains explicit and temporary
+
+
+## ComfyUI source staging
+Encrypted media inputs are decrypted into a private per-job directory beneath `$RUNTIME_ROOT/input` (default `/dev/shm/comfy-runtime/input`), matching the input root passed to ComfyUI. PNG/JPEG/WebP descriptors retain a compatible file extension. Local-path inputs are copied into the same directory; source originals are not removed. Per-job plaintext is removed after success and on graph/crypto failure. Never pass a root-level `/task_*/condition_image.bin` path to `LoadImage`: current ComfyUI rejects paths outside its configured input root.
+
+Graph submission errors expose HTTP status and node validation codes only, not prompts or image paths. Offline regression checks: `python3 -m unittest discover -s tests -v` (12 checks including actual AES-GCM input/output and mocked inference). No changes to model weights, i2i graph, LoRA topology, or endpoint quota are required for this fix.
