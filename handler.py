@@ -1,6 +1,7 @@
 import math
 from krea2_i2i import configure_i2i, comfy_input_directory
 from krea2_identity_edit import build_identity_edit
+from krea2_regional_workflow import prepare_regions, configure_regional
 import runpod
 from runpod.serverless.utils import rp_upload
 import os
@@ -62,6 +63,9 @@ def mask_job_input_for_log(job_input):
             'nonce': '[REDACTED]',
             'ciphertext': '[REDACTED]'
         }
+
+    if 'regional' in masked:
+        masked['regional'] = '[REDACTED]'
 
     if 'lora' in masked:
         masked['lora'] = '[REDACTED]'
@@ -402,6 +406,10 @@ def decrypt_secure_input(job_input):
             payload = json.loads(plaintext.decode('utf-8'))
         except Exception as error:
             raise Exception(f"Failed to decrypt secure payload: {error}")
+
+    if 'regional' in payload:
+        job_input['regional'] = payload['regional']
+        job_input['__regional_authenticated'] = True
 
     if 'identity_edit' in payload:
         job_input['identity_edit'] = payload['identity_edit']
@@ -1084,6 +1092,8 @@ def collect_cleanup_state():
 
 def handler(job):
     job_input = job.get("input", {})
+    # Never trust a caller-provided marker; only decryption can set it.
+    job_input.pop('__regional_authenticated', None)
     job_input = decrypt_secure_input(job_input)
 
     logger.info(f"Received job input (masked): {mask_job_input_for_log(job_input)}")
@@ -1102,10 +1112,13 @@ def handler(job):
             ]
             task_mode = next((value for value in task_mode_values if value), '')
             is_openpose_extract = any(value in ('openpose_extract', 'pose_extract', 'extract_openpose', 'extract_pose') for value in task_mode_values)
+            is_regional = 'regional' in task_mode_values or 'regional' in job_input
             is_identity_edit = 'identity_edit' in task_mode_values
             is_i2i = any(value in ('i2i', 'image_to_image', 'image-to-image', 'img2img') for value in task_mode_values)
             if is_identity_edit and (is_i2i or is_openpose_extract):
                 raise ValueError('Conflicting Krea2 task modes')
+            if is_regional and (is_identity_edit or is_i2i or is_openpose_extract):
+                raise ValueError('Regional mode supports text-to-image only')
             secure_image_roles = ['init_image', 'source_image', 'image'] if (is_i2i or is_identity_edit) else ['condition_image', 'source_image', 'image']
             secure_condition_image = get_secure_media_input(job_input, secure_image_roles)
 
@@ -1358,6 +1371,14 @@ def handler(job):
                         raise Exception("ComfyUI 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.")
                     time.sleep(1)
     
+            if is_regional:
+                if condition_image_path:
+                    raise ValueError('Regional mode does not accept a reference image')
+                regions = prepare_regions(job_input, task_dir, width, height,
+                                          decrypt_media_input_to_file, stage_lora_entries)
+                prompt = configure_regional(prompt, regions)
+                logger.info("Using Krea2 regional workflow with %d regions", len(regions))
+
             ws = websocket.WebSocket()
             max_attempts = 3
             for attempt in range(max_attempts):

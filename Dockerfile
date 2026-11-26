@@ -38,6 +38,11 @@ RUN mkdir -p /ComfyUI/models/loras/krea /licenses/krea2-identity && \
     wget -q -O /licenses/krea2-identity/LICENSE.pdf https://huggingface.co/conradlocke/krea2-identity-edit/resolve/f33b26291c640e8ec50b0da420bfee3c9a660daa/LICENSE.pdf && \
     wget -q -O /licenses/krea2-identity/NOTICE https://huggingface.co/conradlocke/krea2-identity-edit/resolve/f33b26291c640e8ec50b0da420bfee3c9a660daa/NOTICE
 
+# Pinned regional LoRA runtime, baked into the existing endpoint image.
+RUN git clone https://github.com/januspluto/ComfyUI-Krea2-Regional.git /ComfyUI/custom_nodes/ComfyUI-Krea2-Regional && \
+    cd /ComfyUI/custom_nodes/ComfyUI-Krea2-Regional && \
+    git checkout e88207aea47ccefc47605def2dc4f727e3e5f6c6
+
 COPY . .
 RUN mkdir -p /ComfyUI/user/default/ComfyUI-Manager
 COPY config.ini /ComfyUI/user/default/ComfyUI-Manager/config.ini
