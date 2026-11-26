@@ -1,5 +1,6 @@
 import math
 from krea2_i2i import configure_i2i, comfy_input_directory
+from krea2_identity_edit import build_identity_edit
 import runpod
 from runpod.serverless.utils import rp_upload
 import os
@@ -401,6 +402,9 @@ def decrypt_secure_input(job_input):
             payload = json.loads(plaintext.decode('utf-8'))
         except Exception as error:
             raise Exception(f"Failed to decrypt secure payload: {error}")
+
+    if 'identity_edit' in payload:
+        job_input['identity_edit'] = payload['identity_edit']
 
     if 'prompt' in payload:
         job_input['prompt'] = payload.get('prompt', '')
@@ -1098,8 +1102,11 @@ def handler(job):
             ]
             task_mode = next((value for value in task_mode_values if value), '')
             is_openpose_extract = any(value in ('openpose_extract', 'pose_extract', 'extract_openpose', 'extract_pose') for value in task_mode_values)
+            is_identity_edit = 'identity_edit' in task_mode_values
             is_i2i = any(value in ('i2i', 'image_to_image', 'image-to-image', 'img2img') for value in task_mode_values)
-            secure_image_roles = ['init_image', 'source_image', 'image'] if is_i2i else ['condition_image', 'source_image', 'image']
+            if is_identity_edit and (is_i2i or is_openpose_extract):
+                raise ValueError('Conflicting Krea2 task modes')
+            secure_image_roles = ['init_image', 'source_image', 'image'] if (is_i2i or is_identity_edit) else ['condition_image', 'source_image', 'image']
             secure_condition_image = get_secure_media_input(job_input, secure_image_roles)
 
             # condition/source/init 이미지 입력 처리 (mode determines whether the image is ControlNet or I2I init image)
@@ -1177,10 +1184,10 @@ def handler(job):
 
             if is_openpose_extract and not condition_image_path:
                 raise Exception("openpose_extract requires source_image, image, condition_image, or a *_path/url/base64 variant.")
-            if is_i2i and not condition_image_path:
+            if (is_i2i or is_identity_edit) and not condition_image_path:
                 raise Exception("i2i requires source_image, init_image, image, condition_image, or a *_path/url/base64 variant.")
 
-            if is_openpose_extract or (condition_image_path and not is_i2i):
+            if is_openpose_extract or (condition_image_path and not is_i2i and not is_identity_edit):
                 raise ValueError("Krea2 supports text or i2i, not ControlNet/OpenPose. Use explicit mode=i2i for an init image.")
 
             if is_mock_secure_flow_enabled():
@@ -1194,7 +1201,10 @@ def handler(job):
             has_lora = len(lora_list) > 0
 
             # 워크플로우 파일 선택 (우선순위: openpose_extract > i2i > condition_image > lora > 기본)
-            if is_openpose_extract:
+            if is_identity_edit:
+                workflow_file = None
+                logger.info("Using Krea2 Identity Edit workflow")
+            elif is_openpose_extract:
                 workflow_file = "workflow/openpose_extract.json"
                 logger.info(f"Using OpenPose extract workflow: {workflow_file}")
             elif is_i2i:
@@ -1210,7 +1220,7 @@ def handler(job):
                 workflow_file = "workflow/krea2.json"
                 logger.info(f"Using Krea2 text-only workflow: {workflow_file}")
 
-            prompt = load_workflow(workflow_file)
+            prompt = {} if is_identity_edit else load_workflow(workflow_file)
 
             # 공통 설정
             prompt_text = job_input.get("prompt", "")
@@ -1235,7 +1245,19 @@ def handler(job):
             if adjusted_height != height:
                 logger.info(f"Height adjusted to nearest multiple of 16: {height} -> {adjusted_height}")
 
-            if is_openpose_extract:
+            if is_identity_edit:
+                identity = job_input.get('identity_edit', {})
+                if not isinstance(identity, dict) or set(identity) - {'ref_boost', 'grounding_px', 'identity_strength'}:
+                    raise ValueError('Invalid identity_edit settings')
+                if float(cfg) != 1.0:
+                    raise ValueError('Krea2 Turbo Identity Edit requires cfg=1')
+                prompt = build_identity_edit(
+                    image_path=condition_image_path, prompt=prompt_text,
+                    seed=seed, steps=steps, width=width, height=height,
+                    generation_loras=lora_list, **identity)
+                prompt['13']['inputs']['filename_prefix'] = task_id
+                logger.info('Using Krea2 Identity Edit v1.2 workflow')
+            elif is_openpose_extract:
                 # openpose_extract.json 워크플로우 설정
                 # 노드 1: LoadImage (source photo)
                 prompt["1"]["inputs"]["image"] = condition_image_path
